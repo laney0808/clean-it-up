@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX } from 'lucide-react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
@@ -367,6 +367,23 @@ const ProjectViewer = ({
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectName, setProjectName] = useState(project.name);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [viewingNoteId, setViewingNoteId] = useState<string | null>(null);
+  const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
+  const [tempVideoName, setTempVideoName] = useState('');
+  const [showControls, setShowControls] = useState(false);
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleMouseMove = () => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => {
+      if (isPlaying) setShowControls(false);
+    }, 3000);
+  };
+
+  useEffect(() => {
+    if (!isPlaying) setShowControls(true);
+  }, [isPlaying]);
 
   // File System Access State
   const [resolvedBlobs, setResolvedBlobs] = useState<Record<string, Blob>>({});
@@ -502,10 +519,18 @@ const ProjectViewer = ({
 
   const updateVideoName = async (videoId: string, newName: string) => {
     const video = videos.find(v => v.id === videoId);
-    if (!video || !newName.trim()) return;
+    if (!video || !newName.trim()) {
+      setEditingVideoId(null);
+      return;
+    }
+    if (video.name === newName) {
+      setEditingVideoId(null);
+      return;
+    }
     const updated = { ...video, name: newName };
     await db.saveVideo(updated);
     setVideos(videos.map(v => v.id === videoId ? updated : v));
+    setEditingVideoId(null);
   };
 
   const updateVideoOffset = async (videoId: string, offset: number) => {
@@ -594,12 +619,26 @@ const ProjectViewer = ({
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+      <main className="flex-1 flex flex-col landscape:flex-row md:flex-row overflow-hidden relative">
+        {/* Mobile Landscape Reminder */}
+        <div className="landscape:hidden fixed inset-0 z-[100] pointer-events-none flex items-center justify-center p-6 bg-zinc-900/90 backdrop-blur-md opacity-0 portrait:opacity-100 transition-opacity duration-500">
+          <div className="text-center text-white">
+            <RefreshCw size={48} className="mx-auto mb-4 animate-spin-slow" />
+            <h3 className="text-xl font-bold mb-2">Better in Landscape</h3>
+            <p className="text-zinc-400 text-sm">Rotate your phone for the full side-by-side layout.</p>
+          </div>
+        </div>
+
         {/* Video Area */}
-        <div className="flex-1 p-6 overflow-y-auto bg-zinc-50">
+        <div className="flex-1 p-6 overflow-y-auto bg-zinc-50 relative">
           <div className="max-w-6xl mx-auto space-y-6">
             {referenceVideo && (
-              <div className="relative">
+              <div 
+                className="relative group rounded-2xl overflow-hidden bg-black shadow-2xl"
+                onMouseMove={handleMouseMove}
+                onMouseLeave={() => isPlaying && setShowControls(false)}
+                onClick={() => setShowControls(true)}
+              >
                 <VideoSyncPlayer
                   refVideo={referenceVideo}
                   compVideo={comparisonVideo}
@@ -614,71 +653,76 @@ const ProjectViewer = ({
                   onTimeUpdate={setCurrentTime}
                   onDurationChange={setDuration}
                 />
+
+                {/* YouTube-style Controls Overlay */}
+                <AnimatePresence>
+                  {showControls && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-12 pb-4 px-4"
+                    >
+                      {/* Progress Bar */}
+                      <div className="relative h-1.5 mb-3 group/progress cursor-pointer">
+                        <input
+                          type="range"
+                          min="0"
+                          max={duration || 100}
+                          step="0.01"
+                          value={currentTime}
+                          onChange={(e) => setCurrentTime(parseFloat(e.target.value))}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        />
+                        <div className="absolute inset-y-0 left-0 right-0 bg-white/20 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-emerald-500 transition-all duration-100 relative"
+                            style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
+                          >
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-emerald-500 rounded-full shadow-lg scale-0 group-hover/progress:scale-100 transition-transform" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setIsPlaying(!isPlaying);
+                            }}
+                            className="text-white hover:text-emerald-400 transition-colors"
+                          >
+                            {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
+                          </button>
+                          
+                          <div className="flex items-center gap-2 text-white/90 font-mono text-sm tabular-nums">
+                            <span>{formatTimestamp(currentTime)}</span>
+                            <span className="text-white/40">/</span>
+                            <span className="text-white/60">{formatTimestamp(duration)}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setIsSettingsOpen(!isSettingsOpen);
+                            }}
+                            className={cn(
+                              "p-2 rounded-lg transition-colors",
+                              isSettingsOpen ? "text-emerald-400" : "text-white hover:text-emerald-400"
+                            )}
+                          >
+                            <Settings2 size={20} />
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             )}
-
-            {/* Controls */}
-            <div className="bg-white p-4 rounded-2xl border border-zinc-200 shadow-sm flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <button 
-                    onClick={() => setCurrentTime(Math.max(0, currentTime - 5))}
-                    className="p-2 hover:bg-zinc-100 rounded-lg text-zinc-600"
-                  >
-                    <SkipBack size={20} />
-                  </button>
-                  <button
-                    onClick={() => setIsPlaying(!isPlaying)}
-                    className="w-12 h-12 bg-zinc-900 text-white rounded-xl flex items-center justify-center hover:bg-zinc-800 transition-colors shadow-md"
-                  >
-                    {isPlaying ? <Pause size={24} /> : <Play size={24} className="ml-1" />}
-                  </button>
-                  <button 
-                    onClick={() => setCurrentTime(currentTime + 5)}
-                    className="p-2 hover:bg-zinc-100 rounded-lg text-zinc-600"
-                  >
-                    <SkipForward size={20} />
-                  </button>
-                </div>
-
-                <div className="flex flex-col items-end">
-                  <span className="text-2xl font-mono font-bold text-zinc-900 tabular-nums">
-                    {formatTimestamp(currentTime)}
-                  </span>
-                  <span className="text-xs text-zinc-400 uppercase tracking-widest font-bold">Current Time</span>
-                </div>
-
-                <button
-                  onClick={() => {
-                    setIsPlaying(false);
-                    setIsAddingNote(true);
-                  }}
-                  className="flex items-center gap-2 bg-emerald-500 text-white px-6 py-3 rounded-xl font-semibold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-100"
-                >
-                  <StickyNote size={20} />
-                  <span>Add Note</span>
-                </button>
-              </div>
-
-              {/* Progress Bar */}
-              {referenceVideo && (
-                <div className="relative h-2 bg-zinc-100 rounded-full overflow-hidden cursor-pointer group">
-                  <input
-                    type="range"
-                    min="0"
-                    max={duration || 100}
-                    step="0.01"
-                    value={currentTime}
-                    onChange={(e) => setCurrentTime(parseFloat(e.target.value))}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  />
-                  <div 
-                    className="absolute top-0 left-0 h-full bg-zinc-900 transition-all duration-100"
-                    style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
-                  />
-                </div>
-              )}
-            </div>
 
             {/* Settings / Comparison Selection */}
             <AnimatePresence>
@@ -705,13 +749,37 @@ const ProjectViewer = ({
                           <div className="p-4 rounded-xl border border-zinc-100 bg-zinc-50/50">
                             <div className="flex items-center justify-between mb-3">
                               <span className="text-[10px] text-zinc-400 font-bold uppercase">Reference Video</span>
+                              <button
+                                onClick={() => {
+                                  setEditingVideoId(referenceVideo.id);
+                                  setTempVideoName(referenceVideo.name);
+                                }}
+                                className="text-zinc-400 hover:text-zinc-900 transition-colors"
+                              >
+                                <Pencil size={12} />
+                              </button>
                             </div>
-                            <input
-                              type="text"
-                              value={referenceVideo.name}
-                              onChange={(e) => updateVideoName(referenceVideo.id, e.target.value)}
-                              className="w-full bg-transparent border-none p-0 font-medium text-sm focus:ring-0 outline-none"
-                            />
+                            {editingVideoId === referenceVideo.id ? (
+                              <input
+                                autoFocus
+                                type="text"
+                                value={tempVideoName}
+                                onChange={(e) => setTempVideoName(e.target.value)}
+                                onBlur={() => updateVideoName(referenceVideo.id, tempVideoName)}
+                                onKeyDown={(e) => e.key === 'Enter' && updateVideoName(referenceVideo.id, tempVideoName)}
+                                className="w-full bg-white border border-zinc-200 rounded px-2 py-1 font-medium text-sm focus:ring-2 focus:ring-zinc-900/5 outline-none"
+                              />
+                            ) : (
+                              <p 
+                                onClick={() => {
+                                  setEditingVideoId(referenceVideo.id);
+                                  setTempVideoName(referenceVideo.name);
+                                }}
+                                className="font-medium text-sm text-zinc-900 cursor-pointer hover:text-zinc-600 transition-colors"
+                              >
+                                {referenceVideo.name}
+                              </p>
+                            )}
                           </div>
                         )}
                         {videos.filter(v => !v.isReference).map(v => (
@@ -724,13 +792,41 @@ const ProjectViewer = ({
                             onClick={() => setSelectedCompVideoId(v.id)}
                           >
                             <div className="flex items-center justify-between mb-3">
-                              <input
-                                type="text"
-                                value={v.name}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={(e) => updateVideoName(v.id, e.target.value)}
-                                className="bg-transparent border-none p-0 font-medium text-sm focus:ring-0 outline-none truncate flex-1"
-                              />
+                              {editingVideoId === v.id ? (
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  value={tempVideoName}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => setTempVideoName(e.target.value)}
+                                  onBlur={() => updateVideoName(v.id, tempVideoName)}
+                                  onKeyDown={(e) => e.key === 'Enter' && updateVideoName(v.id, tempVideoName)}
+                                  className="bg-white border border-zinc-200 rounded px-2 py-1 font-medium text-sm focus:ring-2 focus:ring-zinc-900/5 outline-none flex-1 mr-2"
+                                />
+                              ) : (
+                                <div className="flex items-center gap-2 flex-1 truncate">
+                                  <p 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingVideoId(v.id);
+                                      setTempVideoName(v.name);
+                                    }}
+                                    className="font-medium text-sm text-zinc-900 truncate cursor-pointer hover:text-zinc-600 transition-colors"
+                                  >
+                                    {v.name}
+                                  </p>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingVideoId(v.id);
+                                      setTempVideoName(v.name);
+                                    }}
+                                    className="text-zinc-400 hover:text-zinc-900 transition-colors"
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
+                                </div>
+                              )}
                               <button 
                                 type="button"
                                 onClick={async (e) => {
@@ -776,18 +872,30 @@ const ProjectViewer = ({
         </div>
 
         {/* Sidebar: Notes */}
-        <div className="w-full lg:w-96 border-l border-zinc-100 bg-white flex flex-col h-[400px] lg:h-auto">
-          <div className="p-6 border-b border-zinc-100 flex items-center justify-between">
+        <div className="w-full landscape:w-64 md:w-72 border-l border-zinc-100 bg-white flex flex-col h-[300px] landscape:h-auto md:h-auto">
+          <div className="p-4 border-b border-zinc-100 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <StickyNote size={20} className="text-zinc-400" />
-              <h2 className="font-bold text-zinc-900">Notes</h2>
+              <StickyNote size={18} className="text-zinc-400" />
+              <h2 className="font-bold text-zinc-900 text-sm">Notes</h2>
             </div>
-            <span className="text-xs font-bold bg-zinc-100 px-2 py-1 rounded text-zinc-500">
-              {notes.length}
-            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setIsPlaying(false);
+                  setIsAddingNote(true);
+                }}
+                className="p-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors shadow-sm"
+                title="Add Note"
+              >
+                <Plus size={16} />
+              </button>
+              <span className="text-[10px] font-bold bg-zinc-100 px-2 py-0.5 rounded text-zinc-500">
+                {notes.length}
+              </span>
+            </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
             <AnimatePresence mode="popLayout">
               {notes.map(note => (
                 <motion.div
@@ -796,18 +904,19 @@ const ProjectViewer = ({
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, scale: 0.95 }}
-                  className="group bg-zinc-50 hover:bg-zinc-100 border border-zinc-100 rounded-xl p-4 transition-all cursor-pointer"
+                  className="group bg-zinc-50 hover:bg-zinc-100 border border-zinc-100 rounded-xl p-3 transition-all cursor-pointer"
                   onClick={() => {
                     setCurrentTime(note.timestamp);
                     setIsPlaying(false);
+                    setViewingNoteId(note.id);
                   }}
                 >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-1.5 text-zinc-500">
-                      <Clock size={14} />
-                      <span className="text-xs font-mono font-bold">{formatTimestamp(note.timestamp)}</span>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1 text-zinc-500">
+                      <Clock size={12} />
+                      <span className="text-[10px] font-mono font-bold">{formatTimestamp(note.timestamp)}</span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -817,7 +926,7 @@ const ProjectViewer = ({
                         }}
                         className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-zinc-900 transition-opacity"
                       >
-                        <Settings2 size={14} />
+                        <Pencil size={12} />
                       </button>
                       <button
                         onClick={async (e) => {
@@ -833,11 +942,11 @@ const ProjectViewer = ({
                         }}
                         className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-opacity"
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={12} />
                       </button>
                     </div>
                   </div>
-                  <p className="text-sm text-zinc-800 leading-relaxed whitespace-pre-wrap">{note.text}</p>
+                  <p className="text-xs text-zinc-800 leading-relaxed line-clamp-1">{note.text}</p>
                 </motion.div>
               ))}
             </AnimatePresence>
@@ -850,6 +959,65 @@ const ProjectViewer = ({
           </div>
         </div>
       </main>
+
+      {/* View Note Modal */}
+      <AnimatePresence>
+        {viewingNoteId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-zinc-900/40 backdrop-blur-sm"
+              onClick={() => setViewingNoteId(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-8">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-xl font-bold text-zinc-900">Note Detail</h3>
+                  <div className="flex items-center gap-2 text-zinc-500 bg-zinc-50 px-3 py-1.5 rounded-xl border border-zinc-100">
+                    <Clock size={16} />
+                    <span className="text-sm font-mono font-bold">
+                      {formatTimestamp(notes.find(n => n.id === viewingNoteId)?.timestamp || 0)}
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-6 text-zinc-900 whitespace-pre-wrap max-h-[60vh] overflow-y-auto leading-relaxed">
+                  {notes.find(n => n.id === viewingNoteId)?.text}
+                </div>
+                <div className="flex gap-3 mt-8">
+                  <button
+                    onClick={() => {
+                      const note = notes.find(n => n.id === viewingNoteId);
+                      if (note) {
+                        setNoteText(note.text);
+                        setEditingNoteId(note.id);
+                        setViewingNoteId(null);
+                        setIsAddingNote(true);
+                      }
+                    }}
+                    className="flex-1 px-6 py-3 rounded-xl font-semibold text-zinc-900 bg-zinc-100 hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Pencil size={18} />
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => setViewingNoteId(null)}
+                    className="flex-1 px-6 py-3 rounded-xl font-semibold text-white bg-zinc-900 hover:bg-zinc-800 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Add Note Modal */}
       <AnimatePresence>
