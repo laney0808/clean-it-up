@@ -3,11 +3,35 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
+
+// --- File System Access API Helpers ---
+
+const IS_FILE_SYSTEM_API_SUPPORTED = typeof window !== 'undefined' && 'showOpenFilePicker' in window;
+
+interface FileSystemHandlePermissionDescriptor {
+  mode?: 'read' | 'readwrite';
+}
+
+async function verifyPermission(handle: any, readWrite = false) {
+  const options: FileSystemHandlePermissionDescriptor = {
+    mode: readWrite ? 'readwrite' : 'read',
+  };
+  // Check if permission was already granted. If so, return true.
+  if ((await handle.queryPermission(options)) === 'granted') {
+    return true;
+  }
+  // Request permission. If the user grants permission, return true.
+  if ((await handle.requestPermission(options)) === 'granted') {
+    return true;
+  }
+  // The user didn't grant permission, so return false.
+  return false;
+}
 
 // --- Components ---
 
@@ -139,6 +163,8 @@ const LoadingOverlay = ({
 const VideoSyncPlayer = ({ 
   refVideo, 
   compVideo, 
+  refBlob,
+  compBlob,
   currentTime, 
   isPlaying, 
   onTimeUpdate,
@@ -146,6 +172,8 @@ const VideoSyncPlayer = ({
 }: { 
   refVideo: VideoAsset; 
   compVideo?: VideoAsset; 
+  refBlob?: Blob;
+  compBlob?: Blob;
   currentTime: number;
   isPlaying: boolean;
   onTimeUpdate: (time: number) => void;
@@ -157,19 +185,18 @@ const VideoSyncPlayer = ({
   const [compUrl, setCompUrl] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    const blob = new Blob([refVideo.data], { type: refVideo.type });
-    const url = URL.createObjectURL(blob);
+    if (!refBlob) return;
+    const url = URL.createObjectURL(refBlob);
     setRefUrl(url);
     return () => {
       URL.revokeObjectURL(url);
       setRefUrl(undefined);
     };
-  }, [refVideo.id]);
+  }, [refBlob, refVideo.id]);
 
   useEffect(() => {
-    if (compVideo) {
-      const blob = new Blob([compVideo.data], { type: compVideo.type });
-      const url = URL.createObjectURL(blob);
+    if (compBlob) {
+      const url = URL.createObjectURL(compBlob);
       setCompUrl(url);
       return () => {
         URL.revokeObjectURL(url);
@@ -178,7 +205,7 @@ const VideoSyncPlayer = ({
     } else {
       setCompUrl(undefined);
     }
-  }, [compVideo?.id]);
+  }, [compBlob, compVideo?.id]);
 
   // Sync playback state - run when isPlaying OR when URLs are ready
   useEffect(() => {
@@ -332,9 +359,50 @@ const ProjectViewer = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // File System Access State
+  const [resolvedBlobs, setResolvedBlobs] = useState<Record<string, Blob>>({});
+  const [permissionStatus, setPermissionStatus] = useState<Record<string, 'granted' | 'denied' | 'prompt' | 'missing'>>({});
+
   useEffect(() => {
     loadProjectData();
   }, [project.id]);
+
+  const resolveVideo = useCallback(async (video: VideoAsset, forcePrompt = false) => {
+    if (video.data) {
+      const blob = new Blob([video.data], { type: video.type });
+      setResolvedBlobs(prev => ({ ...prev, [video.id]: blob }));
+      setPermissionStatus(prev => ({ ...prev, [video.id]: 'granted' }));
+      return;
+    }
+
+    if (!video.handle) {
+      setPermissionStatus(prev => ({ ...prev, [video.id]: 'missing' }));
+      return;
+    }
+
+    try {
+      // Check permission
+      const isGranted = forcePrompt 
+        ? await verifyPermission(video.handle)
+        : (await (video.handle as any).queryPermission()) === 'granted';
+
+      if (isGranted) {
+        const file = await video.handle.getFile();
+        // Verification: check size (simple check)
+        if (file.size !== video.size) {
+          setPermissionStatus(prev => ({ ...prev, [video.id]: 'missing' }));
+          return;
+        }
+        setResolvedBlobs(prev => ({ ...prev, [video.id]: file }));
+        setPermissionStatus(prev => ({ ...prev, [video.id]: 'granted' }));
+      } else {
+        setPermissionStatus(prev => ({ ...prev, [video.id]: 'prompt' }));
+      }
+    } catch (err) {
+      console.error('Failed to resolve video:', err);
+      setPermissionStatus(prev => ({ ...prev, [video.id]: 'missing' }));
+    }
+  }, []);
 
   const loadProjectData = async () => {
     setIsProcessing(true);
@@ -351,23 +419,43 @@ const ProjectViewer = ({
       if (comps.length > 0 && !selectedCompVideoId) {
         setSelectedCompVideoId(comps[0].id);
       }
+
+      // Resolve all videos
+      for (const v of vids) {
+        resolveVideo(v);
+      }
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleAddVideo = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files?.[0]) return;
-    const file = e.target.files[0];
-
-    setIsProcessing(true);
+  const handleAddVideo = async (e?: React.ChangeEvent<HTMLInputElement>) => {
     try {
-      const data = await file.arrayBuffer();
+      let file: File;
+      let handle: any = undefined;
+
+      if (IS_FILE_SYSTEM_API_SUPPORTED && !e) {
+        const [h] = await (window as any).showOpenFilePicker({
+          types: [{ description: 'Video Files', accept: { 'video/*': ['.mp4', '.mov', '.avi', '.webm'] } }],
+          multiple: false
+        });
+        handle = h;
+        file = await handle.getFile();
+      } else if (e?.target.files?.[0]) {
+        file = e.target.files[0];
+      } else {
+        return;
+      }
+      
+      setIsProcessing(true);
+
       const newVideo: VideoAsset = {
         id: crypto.randomUUID(),
         projectId: project.id,
         name: file.name,
-        data,
+        handle,
+        data: handle ? undefined : await file.arrayBuffer(),
+        size: file.size,
         type: file.type,
         offset: 0,
         isReference: false,
@@ -377,6 +465,42 @@ const ProjectViewer = ({
       await db.saveVideo(newVideo);
       await loadProjectData();
       setSelectedCompVideoId(newVideo.id);
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        console.error('Failed to add video:', err);
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleReplaceVideo = async (videoId: string) => {
+    try {
+      const [handle] = await (window as any).showOpenFilePicker({
+        types: [{ description: 'Video Files', accept: { 'video/*': ['.mp4', '.mov', '.avi', '.webm'] } }],
+        multiple: false
+      });
+      
+      const file = await handle.getFile();
+      const video = videos.find(v => v.id === videoId);
+      if (!video) return;
+
+      setIsProcessing(true);
+      const updatedVideo: VideoAsset = {
+        ...video,
+        name: file.name,
+        handle,
+        size: file.size,
+        type: file.type,
+        data: undefined, // Clear legacy data if any
+      };
+
+      await db.saveVideo(updatedVideo);
+      await loadProjectData();
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        console.error('Failed to replace video:', err);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -411,6 +535,56 @@ const ProjectViewer = ({
   const referenceVideo = useMemo(() => videos.find(v => v.isReference), [videos]);
   const comparisonVideo = useMemo(() => videos.find(v => v.id === selectedCompVideoId), [videos, selectedCompVideoId]);
 
+  const refBlob = referenceVideo ? resolvedBlobs[referenceVideo.id] : undefined;
+  const compBlob = comparisonVideo ? resolvedBlobs[comparisonVideo.id] : undefined;
+
+  const refStatus = referenceVideo ? permissionStatus[referenceVideo.id] : 'missing';
+  const compStatus = comparisonVideo ? permissionStatus[comparisonVideo.id] : 'missing';
+
+  const renderVideoStatus = (video: VideoAsset, status: string, isRef: boolean) => {
+    if (status === 'granted') return null;
+
+    return (
+      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-zinc-900/90 backdrop-blur-sm p-8 text-center">
+        {status === 'prompt' ? (
+          <>
+            <div className="w-16 h-16 bg-zinc-800 rounded-full flex items-center justify-center mb-4 text-zinc-400">
+              <ShieldCheck size={32} />
+            </div>
+            <h3 className="text-white font-bold text-lg mb-2">Permission Required</h3>
+            <p className="text-zinc-400 text-sm mb-6 max-w-xs">
+              To save space, this app links to your local files. Please grant permission to view "{video.name}".
+            </p>
+            <button
+              onClick={() => resolveVideo(video, true)}
+              className="px-6 py-3 bg-white text-zinc-900 rounded-xl font-bold hover:bg-zinc-100 transition-all flex items-center gap-2"
+            >
+              <RefreshCw size={18} />
+              Grant Permission
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mb-4 text-red-500">
+              <AlertTriangle size={32} />
+            </div>
+            <h3 className="text-white font-bold text-lg mb-2">File Not Found</h3>
+            <p className="text-zinc-400 text-sm mb-6 max-w-xs">
+              The file "{video.name}" was moved, renamed, or deleted from your computer.
+            </p>
+            <button
+              onClick={() => handleReplaceVideo(video.id)}
+              className="px-6 py-3 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600 transition-all flex items-center gap-2"
+            >
+              <FileVideo size={18} />
+              Re-link File
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-white flex flex-col">
       {/* Header */}
@@ -442,14 +616,20 @@ const ProjectViewer = ({
         <div className="flex-1 p-6 overflow-y-auto bg-zinc-50">
           <div className="max-w-6xl mx-auto space-y-6">
             {referenceVideo && (
-              <VideoSyncPlayer
-                refVideo={referenceVideo}
-                compVideo={comparisonVideo}
-                currentTime={currentTime}
-                isPlaying={isPlaying}
-                onTimeUpdate={setCurrentTime}
-                onDurationChange={setDuration}
-              />
+              <div className="relative">
+                {renderVideoStatus(referenceVideo, refStatus, true)}
+                {comparisonVideo && renderVideoStatus(comparisonVideo, compStatus, false)}
+                <VideoSyncPlayer
+                  refVideo={referenceVideo}
+                  compVideo={comparisonVideo}
+                  refBlob={refBlob}
+                  compBlob={compBlob}
+                  currentTime={currentTime}
+                  isPlaying={isPlaying}
+                  onTimeUpdate={setCurrentTime}
+                  onDurationChange={setDuration}
+                />
+              </div>
             )}
 
             {/* Controls */}
@@ -528,11 +708,21 @@ const ProjectViewer = ({
                     <div>
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="font-bold text-zinc-900">Comparison Videos</h3>
-                        <label className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1">
-                          <Plus size={16} />
-                          <span>Add Video</span>
-                          <input type="file" accept="video/*" className="hidden" onChange={handleAddVideo} />
-                        </label>
+                        {IS_FILE_SYSTEM_API_SUPPORTED ? (
+                          <button 
+                            onClick={() => handleAddVideo()}
+                            className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1"
+                          >
+                            <Plus size={16} />
+                            <span>Add Video</span>
+                          </button>
+                        ) : (
+                          <label className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1">
+                            <Plus size={16} />
+                            <span>Add Video</span>
+                            <input type="file" accept="video/*" className="hidden" onChange={handleAddVideo} />
+                          </label>
+                        )}
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         {videos.filter(v => !v.isReference).map(v => (
@@ -740,12 +930,26 @@ export default function App() {
     setIsLoading(false);
   };
 
-  const handleCreateProject = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setIsProcessing(true);
+  const handleCreateProject = async (e?: React.ChangeEvent<HTMLInputElement>) => {
     try {
+      let file: File;
+      let handle: any = undefined;
+
+      if (IS_FILE_SYSTEM_API_SUPPORTED && !e) {
+        const [h] = await (window as any).showOpenFilePicker({
+          types: [{ description: 'Video Files', accept: { 'video/*': ['.mp4', '.mov', '.avi', '.webm'] } }],
+          multiple: false
+        });
+        handle = h;
+        file = await handle.getFile();
+      } else if (e?.target.files?.[0]) {
+        file = e.target.files[0];
+      } else {
+        return;
+      }
+
+      setIsProcessing(true);
+
       const projectId = crypto.randomUUID();
       const newProject: Project = {
         id: projectId,
@@ -753,12 +957,13 @@ export default function App() {
         createdAt: Date.now(),
       };
 
-      const data = await file.arrayBuffer();
       const refVideo: VideoAsset = {
         id: crypto.randomUUID(),
         projectId,
         name: file.name,
-        data,
+        handle,
+        data: handle ? undefined : await file.arrayBuffer(),
+        size: file.size,
         type: file.type,
         offset: 0,
         isReference: true,
@@ -770,6 +975,10 @@ export default function App() {
       
       setProjects([newProject, ...projects]);
       setCurrentProject(newProject);
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        console.error('Failed to create project:', err);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -814,11 +1023,21 @@ export default function App() {
             <h1 className="text-4xl font-bold text-zinc-900 tracking-tight">VideoNote</h1>
             <p className="text-zinc-500 mt-2">Annotate and compare videos with precision.</p>
           </div>
-          <label className="flex items-center gap-2 bg-zinc-900 text-white px-6 py-3 rounded-2xl font-semibold cursor-pointer hover:bg-zinc-800 transition-colors shadow-lg shadow-zinc-200">
-            <Plus size={20} />
-            <span>New Project</span>
-            <input type="file" accept="video/*" className="hidden" onChange={handleCreateProject} />
-          </label>
+          {IS_FILE_SYSTEM_API_SUPPORTED ? (
+            <button 
+              onClick={() => handleCreateProject()}
+              className="flex items-center gap-2 bg-zinc-900 text-white px-6 py-3 rounded-2xl font-semibold cursor-pointer hover:bg-zinc-800 transition-colors shadow-lg shadow-zinc-200"
+            >
+              <Plus size={20} />
+              <span>New Project</span>
+            </button>
+          ) : (
+            <label className="flex items-center gap-2 bg-zinc-900 text-white px-6 py-3 rounded-2xl font-semibold cursor-pointer hover:bg-zinc-800 transition-colors shadow-lg shadow-zinc-200">
+              <Plus size={20} />
+              <span>New Project</span>
+              <input type="file" accept="video/*" className="hidden" onChange={handleCreateProject} />
+            </label>
+          )}
         </header>
 
         {projects.length === 0 ? (
@@ -856,6 +1075,21 @@ export default function App() {
       />
 
       <LoadingOverlay isVisible={isProcessing} />
+
+      {/* FAB for mobile/desktop */}
+      {IS_FILE_SYSTEM_API_SUPPORTED ? (
+        <button
+          onClick={() => handleCreateProject()}
+          className="fixed bottom-8 right-8 w-16 h-16 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-zinc-800 transition-all z-40 group"
+        >
+          <Plus size={32} className="group-hover:rotate-90 transition-transform duration-300" />
+        </button>
+      ) : (
+        <label className="fixed bottom-8 right-8 w-16 h-16 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-zinc-800 transition-all z-40 group cursor-pointer">
+          <Plus size={32} className="group-hover:rotate-90 transition-transform duration-300" />
+          <input type="file" accept="video/*" className="hidden" onChange={handleCreateProject} />
+        </label>
+      )}
     </div>
   );
 }
