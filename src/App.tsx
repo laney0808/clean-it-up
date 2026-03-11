@@ -4,34 +4,11 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck } from 'lucide-react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
-
-// --- File System Access API Helpers ---
-
-const IS_FILE_SYSTEM_API_SUPPORTED = typeof window !== 'undefined' && 'showOpenFilePicker' in window;
-
-interface FileSystemHandlePermissionDescriptor {
-  mode?: 'read' | 'readwrite';
-}
-
-async function verifyPermission(handle: any, readWrite = false) {
-  const options: FileSystemHandlePermissionDescriptor = {
-    mode: readWrite ? 'readwrite' : 'read',
-  };
-  // Check if permission was already granted. If so, return true.
-  if ((await handle.queryPermission(options)) === 'granted') {
-    return true;
-  }
-  // Request permission. If the user grants permission, return true.
-  if ((await handle.requestPermission(options)) === 'granted') {
-    return true;
-  }
-  // The user didn't grant permission, so return false.
-  return false;
-}
+import { exportStandaloneHtml } from './exporter';
 
 // --- Components ---
 
@@ -167,6 +144,10 @@ const VideoSyncPlayer = ({
   compBlob,
   currentTime, 
   isPlaying, 
+  isRefMuted,
+  isCompMuted,
+  onToggleRefMute,
+  onToggleCompMute,
   onTimeUpdate,
   onDurationChange
 }: { 
@@ -176,6 +157,10 @@ const VideoSyncPlayer = ({
   compBlob?: Blob;
   currentTime: number;
   isPlaying: boolean;
+  isRefMuted: boolean;
+  isCompMuted: boolean;
+  onToggleRefMute: () => void;
+  onToggleCompMute: () => void;
   onTimeUpdate: (time: number) => void;
   onDurationChange: (duration: number) => void;
 }) => {
@@ -258,12 +243,22 @@ const VideoSyncPlayer = ({
             onTimeUpdate={handleRefTimeUpdate}
             onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
             playsInline
+            muted={isRefMuted}
             preload="auto"
           />
         )}
         <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
           Reference
         </div>
+        <button
+          onClick={onToggleRefMute}
+          className={cn(
+            "absolute top-4 right-4 p-2 rounded-lg backdrop-blur-sm transition-colors",
+            isRefMuted ? "bg-red-500/80 text-white" : "bg-black/50 text-white hover:bg-black/70"
+          )}
+        >
+          {isRefMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+        </button>
       </div>
       {compVideo && (
         <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-zinc-200 shadow-inner">
@@ -273,13 +268,22 @@ const VideoSyncPlayer = ({
               src={compUrl}
               className="w-full h-full object-contain"
               playsInline
-              muted // Mute comparison video to avoid audio overlap
+              muted={isCompMuted}
               preload="auto"
             />
           )}
           <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
             Comparison
           </div>
+          <button
+            onClick={onToggleCompMute}
+            className={cn(
+              "absolute top-4 right-4 p-2 rounded-lg backdrop-blur-sm transition-colors",
+              isCompMuted ? "bg-red-500/80 text-white" : "bg-black/50 text-white hover:bg-black/70"
+            )}
+          >
+            {isCompMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
           {currentTime + compVideo.offset < 0 && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-white font-medium">
               Waiting for offset...
@@ -358,6 +362,11 @@ const ProjectViewer = ({
   const [noteText, setNoteText] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isRefMuted, setIsRefMuted] = useState(false);
+  const [isCompMuted, setIsCompMuted] = useState(true);
+  const [isEditingProjectName, setIsEditingProjectName] = useState(false);
+  const [projectName, setProjectName] = useState(project.name);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
 
   // File System Access State
   const [resolvedBlobs, setResolvedBlobs] = useState<Record<string, Blob>>({});
@@ -367,40 +376,10 @@ const ProjectViewer = ({
     loadProjectData();
   }, [project.id]);
 
-  const resolveVideo = useCallback(async (video: VideoAsset, forcePrompt = false) => {
+  const resolveVideo = useCallback(async (video: VideoAsset) => {
     if (video.data) {
       const blob = new Blob([video.data], { type: video.type });
       setResolvedBlobs(prev => ({ ...prev, [video.id]: blob }));
-      setPermissionStatus(prev => ({ ...prev, [video.id]: 'granted' }));
-      return;
-    }
-
-    if (!video.handle) {
-      setPermissionStatus(prev => ({ ...prev, [video.id]: 'missing' }));
-      return;
-    }
-
-    try {
-      // Check permission
-      const isGranted = forcePrompt 
-        ? await verifyPermission(video.handle)
-        : (await (video.handle as any).queryPermission()) === 'granted';
-
-      if (isGranted) {
-        const file = await video.handle.getFile();
-        // Verification: check size (simple check)
-        if (file.size !== video.size) {
-          setPermissionStatus(prev => ({ ...prev, [video.id]: 'missing' }));
-          return;
-        }
-        setResolvedBlobs(prev => ({ ...prev, [video.id]: file }));
-        setPermissionStatus(prev => ({ ...prev, [video.id]: 'granted' }));
-      } else {
-        setPermissionStatus(prev => ({ ...prev, [video.id]: 'prompt' }));
-      }
-    } catch (err) {
-      console.error('Failed to resolve video:', err);
-      setPermissionStatus(prev => ({ ...prev, [video.id]: 'missing' }));
     }
   }, []);
 
@@ -429,32 +408,17 @@ const ProjectViewer = ({
     }
   };
 
-  const handleAddVideo = async (e?: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAddVideo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setIsProcessing(true);
     try {
-      let file: File;
-      let handle: any = undefined;
-
-      if (IS_FILE_SYSTEM_API_SUPPORTED && !e) {
-        const [h] = await (window as any).showOpenFilePicker({
-          types: [{ description: 'Video Files', accept: { 'video/*': ['.mp4', '.mov', '.avi', '.webm'] } }],
-          multiple: false
-        });
-        handle = h;
-        file = await handle.getFile();
-      } else if (e?.target.files?.[0]) {
-        file = e.target.files[0];
-      } else {
-        return;
-      }
-      
-      setIsProcessing(true);
-
       const newVideo: VideoAsset = {
         id: crypto.randomUUID(),
         projectId: project.id,
         name: file.name,
-        handle,
-        data: handle ? undefined : await file.arrayBuffer(),
+        data: await file.arrayBuffer(),
         size: file.size,
         type: file.type,
         offset: 0,
@@ -466,41 +430,33 @@ const ProjectViewer = ({
       await loadProjectData();
       setSelectedCompVideoId(newVideo.id);
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        console.error('Failed to add video:', err);
-      }
+      console.error('Failed to add video:', err);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleReplaceVideo = async (videoId: string) => {
-    try {
-      const [handle] = await (window as any).showOpenFilePicker({
-        types: [{ description: 'Video Files', accept: { 'video/*': ['.mp4', '.mov', '.avi', '.webm'] } }],
-        multiple: false
-      });
-      
-      const file = await handle.getFile();
-      const video = videos.find(v => v.id === videoId);
-      if (!video) return;
+  const handleReplaceVideo = async (videoId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const video = videos.find(v => v.id === videoId);
+    if (!video) return;
 
-      setIsProcessing(true);
+    setIsProcessing(true);
+    try {
       const updatedVideo: VideoAsset = {
         ...video,
         name: file.name,
-        handle,
         size: file.size,
         type: file.type,
-        data: undefined, // Clear legacy data if any
+        data: await file.arrayBuffer(),
       };
 
       await db.saveVideo(updatedVideo);
       await loadProjectData();
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        console.error('Failed to replace video:', err);
-      }
+      console.error('Failed to replace video:', err);
     } finally {
       setIsProcessing(false);
     }
@@ -509,18 +465,47 @@ const ProjectViewer = ({
   const handleAddNote = async () => {
     if (!noteText.trim()) return;
 
-    const newNote: Note = {
-      id: crypto.randomUUID(),
-      projectId: project.id,
-      timestamp: currentTime,
-      text: noteText,
-      createdAt: Date.now(),
-    };
+    if (editingNoteId) {
+      const note = notes.find(n => n.id === editingNoteId);
+      if (note) {
+        const updatedNote = { ...note, text: noteText };
+        await db.saveNote(updatedNote);
+        setNotes(notes.map(n => n.id === editingNoteId ? updatedNote : n));
+      }
+    } else {
+      const newNote: Note = {
+        id: crypto.randomUUID(),
+        projectId: project.id,
+        timestamp: currentTime,
+        text: noteText,
+        createdAt: Date.now(),
+      };
+      await db.saveNote(newNote);
+      setNotes([...notes, newNote].sort((a, b) => a.timestamp - b.timestamp));
+    }
 
-    await db.saveNote(newNote);
-    setNotes([...notes, newNote].sort((a, b) => a.timestamp - b.timestamp));
     setNoteText('');
+    setEditingNoteId(null);
     setIsAddingNote(false);
+  };
+
+  const updateProjectName = async () => {
+    if (!projectName.trim() || projectName === project.name) {
+      setProjectName(project.name);
+      setIsEditingProjectName(false);
+      return;
+    }
+    const updatedProject = { ...project, name: projectName };
+    await db.saveProject(updatedProject);
+    setIsEditingProjectName(false);
+  };
+
+  const updateVideoName = async (videoId: string, newName: string) => {
+    const video = videos.find(v => v.id === videoId);
+    if (!video || !newName.trim()) return;
+    const updated = { ...video, name: newName };
+    await db.saveVideo(updated);
+    setVideos(videos.map(v => v.id === videoId ? updated : v));
   };
 
   const updateVideoOffset = async (videoId: string, offset: number) => {
@@ -541,48 +526,8 @@ const ProjectViewer = ({
   const refStatus = referenceVideo ? permissionStatus[referenceVideo.id] : 'missing';
   const compStatus = comparisonVideo ? permissionStatus[comparisonVideo.id] : 'missing';
 
-  const renderVideoStatus = (video: VideoAsset, status: string, isRef: boolean) => {
-    if (status === 'granted') return null;
-
-    return (
-      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-zinc-900/90 backdrop-blur-sm p-8 text-center">
-        {status === 'prompt' ? (
-          <>
-            <div className="w-16 h-16 bg-zinc-800 rounded-full flex items-center justify-center mb-4 text-zinc-400">
-              <ShieldCheck size={32} />
-            </div>
-            <h3 className="text-white font-bold text-lg mb-2">Permission Required</h3>
-            <p className="text-zinc-400 text-sm mb-6 max-w-xs">
-              To save space, this app links to your local files. Please grant permission to view "{video.name}".
-            </p>
-            <button
-              onClick={() => resolveVideo(video, true)}
-              className="px-6 py-3 bg-white text-zinc-900 rounded-xl font-bold hover:bg-zinc-100 transition-all flex items-center gap-2"
-            >
-              <RefreshCw size={18} />
-              Grant Permission
-            </button>
-          </>
-        ) : (
-          <>
-            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mb-4 text-red-500">
-              <AlertTriangle size={32} />
-            </div>
-            <h3 className="text-white font-bold text-lg mb-2">File Not Found</h3>
-            <p className="text-zinc-400 text-sm mb-6 max-w-xs">
-              The file "{video.name}" was moved, renamed, or deleted from your computer.
-            </p>
-            <button
-              onClick={() => handleReplaceVideo(video.id)}
-              className="px-6 py-3 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600 transition-all flex items-center gap-2"
-            >
-              <FileVideo size={18} />
-              Re-link File
-            </button>
-          </>
-        )}
-      </div>
-    );
+  const renderVideoStatus = (video: VideoAsset, isRef: boolean) => {
+    return null;
   };
 
   return (
@@ -596,9 +541,47 @@ const ProjectViewer = ({
           >
             <ChevronLeft size={20} />
           </button>
-          <h1 className="font-bold text-zinc-900 truncate max-w-[200px] md:max-w-md">{project.name}</h1>
+          {isEditingProjectName ? (
+            <input
+              autoFocus
+              type="text"
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              onBlur={updateProjectName}
+              onKeyDown={(e) => e.key === 'Enter' && updateProjectName()}
+              className="font-bold text-zinc-900 bg-zinc-50 border border-zinc-200 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-zinc-900/5"
+            />
+          ) : (
+            <h1 
+              onClick={() => setIsEditingProjectName(true)}
+              className="font-bold text-zinc-900 truncate max-w-[200px] md:max-w-md cursor-pointer hover:bg-zinc-50 px-2 py-1 rounded transition-colors"
+            >
+              {projectName}
+            </h1>
+          )}
         </div>
         <div className="flex items-center gap-2">
+          <button 
+            onClick={async () => {
+              setIsProcessing(true);
+              try {
+                await exportStandaloneHtml(project, videos, notes, selectedCompVideoId);
+              } catch (err) {
+                console.error('Export failed:', err);
+                alert('Export failed. The video files might be too large for your browser to process into a single HTML file.');
+              } finally {
+                setIsProcessing(false);
+              }
+            }}
+            disabled={isProcessing}
+            className="p-2 rounded-xl hover:bg-zinc-100 text-zinc-500 transition-colors flex items-center gap-2 disabled:opacity-50"
+            title="Export Standalone HTML"
+          >
+            {isProcessing ? <RefreshCw size={20} className="animate-spin" /> : <Share size={20} />}
+            <span className="text-sm font-semibold hidden md:inline">
+              {isProcessing ? 'Exporting...' : 'Export'}
+            </span>
+          </button>
           <button 
             onClick={() => setIsSettingsOpen(!isSettingsOpen)}
             className={cn(
@@ -617,8 +600,6 @@ const ProjectViewer = ({
           <div className="max-w-6xl mx-auto space-y-6">
             {referenceVideo && (
               <div className="relative">
-                {renderVideoStatus(referenceVideo, refStatus, true)}
-                {comparisonVideo && renderVideoStatus(comparisonVideo, compStatus, false)}
                 <VideoSyncPlayer
                   refVideo={referenceVideo}
                   compVideo={comparisonVideo}
@@ -626,6 +607,10 @@ const ProjectViewer = ({
                   compBlob={compBlob}
                   currentTime={currentTime}
                   isPlaying={isPlaying}
+                  isRefMuted={isRefMuted}
+                  isCompMuted={isCompMuted}
+                  onToggleRefMute={() => setIsRefMuted(!isRefMuted)}
+                  onToggleCompMute={() => setIsCompMuted(!isCompMuted)}
                   onTimeUpdate={setCurrentTime}
                   onDurationChange={setDuration}
                 />
@@ -708,23 +693,27 @@ const ProjectViewer = ({
                     <div>
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="font-bold text-zinc-900">Comparison Videos</h3>
-                        {IS_FILE_SYSTEM_API_SUPPORTED ? (
-                          <button 
-                            onClick={() => handleAddVideo()}
-                            className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1"
-                          >
-                            <Plus size={16} />
-                            <span>Add Video</span>
-                          </button>
-                        ) : (
-                          <label className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1">
-                            <Plus size={16} />
-                            <span>Add Video</span>
-                            <input type="file" accept="video/*" className="hidden" onChange={handleAddVideo} />
-                          </label>
-                        )}
+                        <label className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1">
+                          <Plus size={16} />
+                          <span>Add Video</span>
+                          <input type="file" accept="video/*" className="hidden" onChange={handleAddVideo} />
+                        </label>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {/* Reference Video Info */}
+                        {referenceVideo && (
+                          <div className="p-4 rounded-xl border border-zinc-100 bg-zinc-50/50">
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="text-[10px] text-zinc-400 font-bold uppercase">Reference Video</span>
+                            </div>
+                            <input
+                              type="text"
+                              value={referenceVideo.name}
+                              onChange={(e) => updateVideoName(referenceVideo.id, e.target.value)}
+                              className="w-full bg-transparent border-none p-0 font-medium text-sm focus:ring-0 outline-none"
+                            />
+                          </div>
+                        )}
                         {videos.filter(v => !v.isReference).map(v => (
                           <div 
                             key={v.id}
@@ -735,7 +724,13 @@ const ProjectViewer = ({
                             onClick={() => setSelectedCompVideoId(v.id)}
                           >
                             <div className="flex items-center justify-between mb-3">
-                              <span className="font-medium text-sm truncate pr-4">{v.name}</span>
+                              <input
+                                type="text"
+                                value={v.name}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => updateVideoName(v.id, e.target.value)}
+                                className="bg-transparent border-none p-0 font-medium text-sm focus:ring-0 outline-none truncate flex-1"
+                              />
                               <button 
                                 type="button"
                                 onClick={async (e) => {
@@ -750,9 +745,10 @@ const ProjectViewer = ({
                                     }
                                   });
                                 }}
-                                className="text-zinc-400 hover:text-red-500"
+                                className="text-zinc-400 hover:text-red-500 transition-colors"
+                                title="Delete comparison video"
                               >
-                                <X size={14} />
+                                <Trash2 size={20} />
                               </button>
                             </div>
                             <div className="flex items-center gap-3">
@@ -811,22 +807,35 @@ const ProjectViewer = ({
                       <Clock size={14} />
                       <span className="text-xs font-mono font-bold">{formatTimestamp(note.timestamp)}</span>
                     </div>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        onConfirmDelete({
-                          title: 'Delete Note',
-                          message: 'Are you sure you want to delete this note?',
-                          onConfirm: async () => {
-                            await db.deleteNote(note.id);
-                            setNotes(notes.filter(n => n.id !== note.id));
-                          }
-                        });
-                      }}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-opacity"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setNoteText(note.text);
+                          setEditingNoteId(note.id);
+                          setIsAddingNote(true);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-zinc-900 transition-opacity"
+                      >
+                        <Settings2 size={14} />
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          onConfirmDelete({
+                            title: 'Delete Note',
+                            message: 'Are you sure you want to delete this note?',
+                            onConfirm: async () => {
+                              await db.deleteNote(note.id);
+                              setNotes(notes.filter(n => n.id !== note.id));
+                            }
+                          });
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-opacity"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-sm text-zinc-800 leading-relaxed whitespace-pre-wrap">{note.text}</p>
                 </motion.div>
@@ -861,10 +870,12 @@ const ProjectViewer = ({
             >
               <div className="p-8">
                 <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl font-bold text-zinc-900">Add Note</h3>
+                  <h3 className="text-xl font-bold text-zinc-900">{editingNoteId ? 'Edit Note' : 'Add Note'}</h3>
                   <div className="flex items-center gap-2 text-zinc-500 bg-zinc-50 px-3 py-1.5 rounded-xl border border-zinc-100">
                     <Clock size={16} />
-                    <span className="text-sm font-mono font-bold">{formatTimestamp(currentTime)}</span>
+                    <span className="text-sm font-mono font-bold">
+                      {formatTimestamp(editingNoteId ? notes.find(n => n.id === editingNoteId)?.timestamp || currentTime : currentTime)}
+                    </span>
                   </div>
                 </div>
                 <textarea
@@ -876,7 +887,11 @@ const ProjectViewer = ({
                 />
                 <div className="flex gap-3 mt-8">
                   <button
-                    onClick={() => setIsAddingNote(false)}
+                    onClick={() => {
+                      setIsAddingNote(false);
+                      setEditingNoteId(null);
+                      setNoteText('');
+                    }}
                     className="flex-1 px-6 py-3 rounded-xl font-semibold text-zinc-600 hover:bg-zinc-50 transition-colors"
                   >
                     Cancel
@@ -886,7 +901,7 @@ const ProjectViewer = ({
                     disabled={!noteText.trim()}
                     className="flex-1 px-6 py-3 rounded-xl font-semibold bg-zinc-900 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-zinc-200"
                   >
-                    Save Note
+                    {editingNoteId ? 'Update Note' : 'Save Note'}
                   </button>
                 </div>
               </div>
@@ -930,26 +945,12 @@ export default function App() {
     setIsLoading(false);
   };
 
-  const handleCreateProject = async (e?: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCreateProject = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessing(true);
     try {
-      let file: File;
-      let handle: any = undefined;
-
-      if (IS_FILE_SYSTEM_API_SUPPORTED && !e) {
-        const [h] = await (window as any).showOpenFilePicker({
-          types: [{ description: 'Video Files', accept: { 'video/*': ['.mp4', '.mov', '.avi', '.webm'] } }],
-          multiple: false
-        });
-        handle = h;
-        file = await handle.getFile();
-      } else if (e?.target.files?.[0]) {
-        file = e.target.files[0];
-      } else {
-        return;
-      }
-
-      setIsProcessing(true);
-
       const projectId = crypto.randomUUID();
       const newProject: Project = {
         id: projectId,
@@ -961,8 +962,7 @@ export default function App() {
         id: crypto.randomUUID(),
         projectId,
         name: file.name,
-        handle,
-        data: handle ? undefined : await file.arrayBuffer(),
+        data: await file.arrayBuffer(),
         size: file.size,
         type: file.type,
         offset: 0,
@@ -976,9 +976,7 @@ export default function App() {
       setProjects([newProject, ...projects]);
       setCurrentProject(newProject);
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        console.error('Failed to create project:', err);
-      }
+      console.error('Failed to create project:', err);
     } finally {
       setIsProcessing(false);
     }
@@ -997,74 +995,61 @@ export default function App() {
     });
   };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
-        <div className="animate-pulse text-zinc-400 font-medium">Loading VideoNote...</div>
-      </div>
-    );
-  }
-
-  if (currentProject) {
-    return (
-      <ProjectViewer 
-        project={currentProject} 
-        onBack={() => setCurrentProject(null)}
-        onConfirmDelete={(config) => setConfirmConfig({ ...config, isOpen: true })}
-      />
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-zinc-50 p-6 md:p-12">
-      <div className="max-w-5xl mx-auto">
-        <header className="flex items-center justify-between mb-12">
-          <div>
-            <h1 className="text-4xl font-bold text-zinc-900 tracking-tight">VideoNote</h1>
-            <p className="text-zinc-500 mt-2">Annotate and compare videos with precision.</p>
-          </div>
-          {IS_FILE_SYSTEM_API_SUPPORTED ? (
-            <button 
-              onClick={() => handleCreateProject()}
-              className="flex items-center gap-2 bg-zinc-900 text-white px-6 py-3 rounded-2xl font-semibold cursor-pointer hover:bg-zinc-800 transition-colors shadow-lg shadow-zinc-200"
-            >
-              <Plus size={20} />
-              <span>New Project</span>
-            </button>
-          ) : (
-            <label className="flex items-center gap-2 bg-zinc-900 text-white px-6 py-3 rounded-2xl font-semibold cursor-pointer hover:bg-zinc-800 transition-colors shadow-lg shadow-zinc-200">
-              <Plus size={20} />
-              <span>New Project</span>
-              <input type="file" accept="video/*" className="hidden" onChange={handleCreateProject} />
-            </label>
-          )}
-        </header>
+    <>
+      {isLoading ? (
+        <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
+          <div className="animate-pulse text-zinc-400 font-medium">Loading VideoNote...</div>
+        </div>
+      ) : currentProject ? (
+        <ProjectViewer 
+          project={currentProject} 
+          onBack={() => setCurrentProject(null)}
+          onConfirmDelete={(config) => setConfirmConfig({ ...config, isOpen: true })}
+        />
+      ) : (
+        <div className="min-h-screen bg-zinc-50 p-6 md:p-12">
+          <div className="max-w-5xl mx-auto">
+            <header className="flex items-center justify-between mb-12">
+              <div>
+                <h1 className="text-4xl font-bold text-zinc-900 tracking-tight">VideoNote</h1>
+                <p className="text-zinc-500 mt-2">Annotate and compare videos with precision.</p>
+              </div>
+            </header>
 
-        {projects.length === 0 ? (
-          <div className="bg-white border-2 border-dashed border-zinc-200 rounded-3xl p-20 text-center">
-            <div className="w-16 h-16 bg-zinc-100 rounded-2xl flex items-center justify-center mx-auto mb-6 text-zinc-400">
-              <Video size={32} />
-            </div>
-            <h2 className="text-xl font-semibold text-zinc-900">No projects yet</h2>
-            <p className="text-zinc-500 mt-2 max-w-sm mx-auto">
-              Upload your first video to create a project and start annotating.
-            </p>
+            {projects.length === 0 ? (
+              <div className="bg-white border-2 border-dashed border-zinc-200 rounded-3xl p-20 text-center">
+                <div className="w-16 h-16 bg-zinc-100 rounded-2xl flex items-center justify-center mx-auto mb-6 text-zinc-400">
+                  <Video size={32} />
+                </div>
+                <h2 className="text-xl font-semibold text-zinc-900">No projects yet</h2>
+                <p className="text-zinc-500 mt-2 max-w-sm mx-auto">
+                  Upload your first video to create a project and start annotating.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <AnimatePresence mode="popLayout">
+                  {projects.map((p) => (
+                    <ProjectCard
+                      key={p.id}
+                      project={p}
+                      onClick={() => setCurrentProject(p)}
+                      onDelete={(e) => handleDeleteProject(p.id, e)}
+                    />
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <AnimatePresence mode="popLayout">
-              {projects.map(p => (
-                <ProjectCard
-                  key={p.id}
-                  project={p}
-                  onClick={() => setCurrentProject(p)}
-                  onDelete={(e) => handleDeleteProject(p.id, e)}
-                />
-              ))}
-            </AnimatePresence>
-          </div>
-        )}
-      </div>
+
+          {/* FAB for mobile/desktop */}
+          <label className="fixed bottom-8 right-8 w-16 h-16 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-zinc-800 transition-all z-40 group cursor-pointer">
+            <Plus size={32} className="group-hover:rotate-90 transition-transform duration-300" />
+            <input type="file" accept="video/*" className="hidden" onChange={handleCreateProject} />
+          </label>
+        </div>
+      )}
 
       <ConfirmationModal
         isOpen={confirmConfig.isOpen}
@@ -1075,21 +1060,6 @@ export default function App() {
       />
 
       <LoadingOverlay isVisible={isProcessing} />
-
-      {/* FAB for mobile/desktop */}
-      {IS_FILE_SYSTEM_API_SUPPORTED ? (
-        <button
-          onClick={() => handleCreateProject()}
-          className="fixed bottom-8 right-8 w-16 h-16 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-zinc-800 transition-all z-40 group"
-        >
-          <Plus size={32} className="group-hover:rotate-90 transition-transform duration-300" />
-        </button>
-      ) : (
-        <label className="fixed bottom-8 right-8 w-16 h-16 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-zinc-800 transition-all z-40 group cursor-pointer">
-          <Plus size={32} className="group-hover:rotate-90 transition-transform duration-300" />
-          <input type="file" accept="video/*" className="hidden" onChange={handleCreateProject} />
-        </label>
-      )}
-    </div>
+    </>
   );
 }

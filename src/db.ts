@@ -10,8 +10,7 @@ export interface VideoAsset {
   id: string;
   projectId: string;
   name: string;
-  handle?: FileSystemFileHandle;
-  data?: ArrayBuffer; // Keep for backward compatibility or small files
+  data: ArrayBuffer;
   size: number;
   type: string;
   offset: number; // in seconds, relative to reference
