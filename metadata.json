@@ -1,0 +1,5 @@
+{
+  "name": "VideoNote",
+  "description": "A video annotation and comparison tool for precise analysis and note-taking.",
+  "requestFramePermissions": []
+}
