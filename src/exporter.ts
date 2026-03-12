@@ -71,13 +71,9 @@ export const exportStandaloneHtml = async (
                     <div class="space-y-2">
                         <div class="text-xs font-bold text-gray-400 uppercase tracking-widest">Reference</div>
                         <div class="video-container">
-                            <video id="refVideo" src="`);
-
-  // Part 2: Reference Video Data
-  htmlParts.push(refDataUrl);
-
-  // Part 3: Between Videos
-  htmlParts.push(`" playsinline preload="auto"></video>
+                            <video id="refVideo" playsinline preload="auto">
+                                <source id="refSource">
+                            </video>
                         </div>
                     </div>`);
 
@@ -86,9 +82,9 @@ export const exportStandaloneHtml = async (
                     <div class="space-y-2">
                         <div class="text-xs font-bold text-gray-400 uppercase tracking-widest">Comparison</div>
                         <div class="video-container">
-                            <video id="compVideo" src="`);
-    htmlParts.push(compDataUrl);
-    htmlParts.push(`" playsinline muted preload="auto"></video>
+                            <video id="compVideo" playsinline muted preload="auto">
+                                <source id="compSource">
+                            </video>
                         </div>
                     </div>`);
   }
@@ -133,8 +129,13 @@ export const exportStandaloneHtml = async (
     <script>
         const notes = ${notesJson};
         const offset = ${compOffset};
+        const refDataUrl = \`${refDataUrl}\`;
+        const compDataUrl = ${compDataUrl ? `\`${compDataUrl}\`` : 'null'};
+
         const refVideo = document.getElementById('refVideo');
         const compVideo = document.getElementById('compVideo');
+        const refSource = document.getElementById('refSource');
+        const compSource = document.getElementById('compSource');
         const playPauseBtn = document.getElementById('playPauseBtn');
         const playIcon = document.getElementById('playIcon');
         const pauseIcon = document.getElementById('pauseIcon');
@@ -144,6 +145,33 @@ export const exportStandaloneHtml = async (
         const notesList = document.getElementById('notesList');
 
         let isPlaying = false;
+
+        // Optimized way to load large videos in Safari/Mobile
+        async function loadVideo(videoElement, sourceElement, dataUrl) {
+            if (!dataUrl || !sourceElement) return;
+            try {
+                const mime = dataUrl.split(',')[0].match(/:(.*?);/)[1];
+                const response = await fetch(dataUrl);
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                
+                sourceElement.type = mime;
+                sourceElement.src = url;
+                videoElement.load();
+            } catch (e) {
+                console.error("Failed to load video:", e);
+                // Fallback to direct src if fetch fails
+                videoElement.src = dataUrl;
+            }
+        }
+
+        // Initialize videos
+        Promise.all([
+            loadVideo(refVideo, refSource, refDataUrl),
+            loadVideo(compVideo, compSource, compDataUrl)
+        ]).then(() => {
+            console.log("Videos loaded via Blob URLs");
+        });
 
         function formatTime(seconds) {
             const mins = Math.floor(seconds / 60);

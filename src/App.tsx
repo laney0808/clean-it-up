@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil } from 'lucide-react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
@@ -146,6 +146,7 @@ const VideoSyncPlayer = ({
   isPlaying, 
   isRefMuted,
   isCompMuted,
+  isRefHidden,
   onToggleRefMute,
   onToggleCompMute,
   onTimeUpdate,
@@ -159,6 +160,7 @@ const VideoSyncPlayer = ({
   isPlaying: boolean;
   isRefMuted: boolean;
   isCompMuted: boolean;
+  isRefHidden: boolean;
   onToggleRefMute: () => void;
   onToggleCompMute: () => void;
   onTimeUpdate: (time: number) => void;
@@ -233,33 +235,50 @@ const VideoSyncPlayer = ({
   };
 
   return (
-    <div className={cn("grid gap-4", compVideo ? "grid-cols-2" : "grid-cols-1")}>
-      <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-zinc-200 shadow-inner">
-        {refUrl && (
-          <video
-            ref={refVideoRef}
-            src={refUrl}
-            className="w-full h-full object-contain"
-            onTimeUpdate={handleRefTimeUpdate}
-            onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
-            playsInline
-            muted={isRefMuted}
-            preload="auto"
-          />
-        )}
-        <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
-          Reference
-        </div>
-        <button
-          onClick={onToggleRefMute}
-          className={cn(
-            "absolute top-4 right-4 p-2 rounded-lg backdrop-blur-sm transition-colors",
-            isRefMuted ? "bg-red-500/80 text-white" : "bg-black/50 text-white hover:bg-black/70"
+    <div className={cn("grid gap-4", (compVideo && !isRefHidden) ? "grid-cols-2" : "grid-cols-1")}>
+      {!isRefHidden && (
+        <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-zinc-200 shadow-inner">
+          {refUrl && (
+            <video
+              ref={refVideoRef}
+              src={refUrl}
+              className="w-full h-full object-contain"
+              onTimeUpdate={handleRefTimeUpdate}
+              onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
+              playsInline
+              muted={isRefMuted}
+              preload="auto"
+            />
           )}
-        >
-          {isRefMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-        </button>
-      </div>
+          <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
+            Reference
+          </div>
+          <button
+            onClick={onToggleRefMute}
+            className={cn(
+              "absolute top-4 right-4 p-2 rounded-lg backdrop-blur-sm transition-colors",
+              isRefMuted ? "bg-red-500/80 text-white" : "bg-black/50 text-white hover:bg-black/70"
+            )}
+          >
+            {isRefMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
+        </div>
+      )}
+      
+      {/* Hidden reference video for sync when hidden */}
+      {isRefHidden && refUrl && (
+        <video
+          ref={refVideoRef}
+          src={refUrl}
+          className="hidden"
+          onTimeUpdate={handleRefTimeUpdate}
+          onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
+          playsInline
+          muted={isRefMuted}
+          preload="auto"
+        />
+      )}
+
       {compVideo && (
         <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-zinc-200 shadow-inner">
           {compUrl && (
@@ -364,6 +383,7 @@ const ProjectViewer = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRefMuted, setIsRefMuted] = useState(false);
   const [isCompMuted, setIsCompMuted] = useState(true);
+  const [isRefHidden, setIsRefHidden] = useState(false);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectName, setProjectName] = useState(project.name);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -648,6 +668,7 @@ const ProjectViewer = ({
                   isPlaying={isPlaying}
                   isRefMuted={isRefMuted}
                   isCompMuted={isCompMuted}
+                  isRefHidden={isRefHidden}
                   onToggleRefMute={() => setIsRefMuted(!isRefMuted)}
                   onToggleCompMute={() => setIsCompMuted(!isCompMuted)}
                   onTimeUpdate={setCurrentTime}
@@ -704,6 +725,19 @@ const ProjectViewer = ({
                         </div>
 
                         <div className="flex items-center gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setIsRefHidden(!isRefHidden);
+                            }}
+                            className={cn(
+                              "p-2 rounded-lg transition-colors",
+                              isRefHidden ? "text-emerald-400" : "text-white hover:text-emerald-400"
+                            )}
+                            title={isRefHidden ? "Show Reference" : "Hide Reference"}
+                          >
+                            {isRefHidden ? <EyeOff size={20} /> : <Eye size={20} />}
+                          </button>
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
