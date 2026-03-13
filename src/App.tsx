@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff } from 'lucide-react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
@@ -381,6 +381,7 @@ const ProjectViewer = ({
   const [noteText, setNoteText] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('Processing video...');
   const [isRefMuted, setIsRefMuted] = useState(false);
   const [isCompMuted, setIsCompMuted] = useState(true);
   const [isRefHidden, setIsRefHidden] = useState(false);
@@ -449,6 +450,7 @@ const ProjectViewer = ({
     const file = e.target.files?.[0];
     if (!file) return;
     
+    setProcessingMessage('Adding video...');
     setIsProcessing(true);
     try {
       const newVideo: VideoAsset = {
@@ -608,14 +610,18 @@ const ProjectViewer = ({
         <div className="flex items-center gap-2">
           <button 
             onClick={async () => {
+              setProcessingMessage('Starting export...');
               setIsProcessing(true);
               try {
-                await exportStandaloneHtml(project, videos, notes, selectedCompVideoId);
+                await exportStandaloneHtml(project, videos, notes, selectedCompVideoId, (msg) => {
+                  setProcessingMessage(msg);
+                });
               } catch (err) {
                 console.error('Export failed:', err);
                 alert('Export failed. The video files might be too large for your browser to process into a single HTML file.');
               } finally {
                 setIsProcessing(false);
+                setProcessingMessage('Processing video...');
               }
             }}
             disabled={isProcessing}
@@ -823,7 +829,7 @@ const ProjectViewer = ({
                               "p-4 rounded-xl border transition-all cursor-pointer",
                               selectedCompVideoId === v.id ? "border-zinc-900 bg-zinc-50" : "border-zinc-100 hover:border-zinc-300"
                             )}
-                            onClick={() => setSelectedCompVideoId(v.id)}
+                            onClick={() => setSelectedCompVideoId(selectedCompVideoId === v.id ? null : v.id)}
                           >
                             <div className="flex items-center justify-between mb-3">
                               {editingVideoId === v.id ? (
@@ -942,7 +948,6 @@ const ProjectViewer = ({
                   onClick={() => {
                     setCurrentTime(note.timestamp);
                     setIsPlaying(false);
-                    setViewingNoteId(note.id);
                   }}
                 >
                   <div className="flex items-center justify-between mb-1.5">
@@ -954,13 +959,11 @@ const ProjectViewer = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setNoteText(note.text);
-                          setEditingNoteId(note.id);
-                          setIsAddingNote(true);
+                          setViewingNoteId(note.id);
                         }}
                         className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-zinc-900 transition-opacity"
                       >
-                        <Pencil size={12} />
+                        <Info size={12} />
                       </button>
                       <button
                         onClick={async (e) => {
@@ -1112,7 +1115,7 @@ const ProjectViewer = ({
         )}
       </AnimatePresence>
 
-      <LoadingOverlay isVisible={isProcessing} />
+      <LoadingOverlay isVisible={isProcessing} message={processingMessage} />
     </div>
   );
 };
@@ -1124,6 +1127,7 @@ export default function App() {
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('Processing video...');
   
   const [confirmConfig, setConfirmConfig] = useState<{
     isOpen: boolean;
@@ -1151,6 +1155,7 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setProcessingMessage('Creating project...');
     setIsProcessing(true);
     try {
       const projectId = crypto.randomUUID();
@@ -1261,7 +1266,7 @@ export default function App() {
         message={confirmConfig.message}
       />
 
-      <LoadingOverlay isVisible={isProcessing} />
+      <LoadingOverlay isVisible={isProcessing} message={processingMessage} />
     </>
   );
 }

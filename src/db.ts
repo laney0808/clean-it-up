@@ -10,7 +10,8 @@ export interface VideoAsset {
   id: string;
   projectId: string;
   name: string;
-  data: ArrayBuffer;
+  data?: ArrayBuffer;
+  url?: string;
   size: number;
   type: string;
   offset: number; // in seconds, relative to reference
