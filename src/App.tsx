@@ -593,7 +593,7 @@ const ProjectViewer = ({
   };
 
   return (
-    <div className="min-h-screen bg-white flex flex-col">
+    <div className="h-screen bg-white flex flex-col overflow-hidden">
       {/* Header */}
       <header className="h-16 border-b border-zinc-100 px-6 flex items-center justify-between bg-white sticky top-0 z-10">
         <div className="flex items-center gap-4">
@@ -660,7 +660,7 @@ const ProjectViewer = ({
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col landscape:flex-row md:flex-row overflow-y-auto landscape:overflow-hidden md:overflow-hidden relative">
+      <main className="flex-1 flex flex-col landscape:flex-row md:flex-row overflow-hidden relative min-h-0">
         {/* Mobile Landscape Reminder */}
         <AnimatePresence>
           {showLandscapeHint && (
@@ -680,8 +680,8 @@ const ProjectViewer = ({
         </AnimatePresence>
 
         {/* Video Area */}
-        <div className="flex-none landscape:flex-1 md:flex-1 p-0 bg-black relative overflow-hidden">
-          <div className="w-full h-full flex flex-col justify-center">
+        <div className="flex-none landscape:flex-1 md:flex-1 p-0 bg-black relative overflow-hidden min-h-0">
+          <div className="w-full landscape:h-full md:h-full flex flex-col justify-center">
             {referenceVideo && (
               <div 
                 className="relative group w-full"
@@ -936,7 +936,7 @@ const ProjectViewer = ({
         </div>
 
         {/* Sidebar: Notes */}
-        <div className="w-full landscape:w-64 md:w-72 border-t landscape:border-t-0 md:border-t-0 landscape:border-l md:border-l border-zinc-100 bg-white flex flex-col min-h-[400px] landscape:h-auto md:h-auto">
+        <div className="w-full landscape:w-64 md:w-72 border-t landscape:border-t-0 md:border-t-0 landscape:border-l md:border-l border-zinc-100 bg-white flex flex-col flex-1 landscape:flex-none md:flex-none min-h-0">
           <div className="p-4 border-b border-zinc-100 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <StickyNote size={18} className="text-zinc-400" />
