@@ -157,9 +157,17 @@ export const exportStandaloneHtml = async (
         .hidden-ref #refWrapper { display: none; }
         .hidden-ref #compWrapper { width: 100% !important; }
         .modal-backdrop { background-color: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+        .loading-overlay { position: fixed; inset: 0; background: #000; z-index: 100; display: flex; flex-direction: column; items-center: center; justify-content: center; transition: opacity 0.5s ease; }
+        .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #10b981; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 1rem; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <div class="text-white/60 font-medium">Loading videos...</div>
+        <div id="loadingProgress" class="text-[10px] text-white/30 mt-2 uppercase tracking-widest">Processing Data Blobs</div>
+    </div>
     <header class="h-14 border-b border-white/10 px-6 flex items-center justify-between bg-black shrink-0">
         <h1 class="font-bold text-white truncate">${project.name}</h1>
         <div class="text-[10px] font-bold text-white/40 uppercase tracking-widest">Standalone Viewer</div>
@@ -172,18 +180,14 @@ export const exportStandaloneHtml = async (
                 <div id="refWrapper" class="flex-1 border-r border-white/5 relative">
                     <div class="absolute top-2 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white/70">Reference</div>
                     <div class="video-container">
-                        <video id="refVideo" playsinline preload="auto">
-                            <source id="refSource">
-                        </video>
+                        <video id="refVideo" playsinline preload="auto"></video>
                     </div>
                 </div>
                 ${hasComp ? `
                 <div id="compWrapper" class="flex-1 relative">
                     <div class="absolute top-2 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white/70">Comparison</div>
                     <div class="video-container">
-                        <video id="compVideo" playsinline muted preload="auto">
-                            <source id="compSource">
-                        </video>
+                        <video id="compVideo" playsinline muted preload="auto"></video>
                     </div>
                 </div>` : ''}
             </div>
@@ -258,15 +262,17 @@ export const exportStandaloneHtml = async (
     </div>
 
     <script>
-        const notes = ${notesJson};
-        const offset = ${compOffset};
-        const refDataUrl = \`${refDataUrl}\`;
-        const compDataUrl = ${compDataUrl ? `\`${compDataUrl}\`` : 'null'};
+        const notes = /* NOTES_START */ ${notesJson} /* NOTES_END */;
+        const offset = /* OFFSET_START */ ${compOffset} /* OFFSET_END */;
+        const refName = /* REF_NAME_START */ ${JSON.stringify(refVideo.name)} /* REF_NAME_END */;
+        const compName = /* COMP_NAME_START */ ${compVideo ? JSON.stringify(compVideo.name) : 'null'} /* COMP_NAME_END */;
+        const refDataUrl = /* REF_DATA_START */ \`${refDataUrl}\` /* REF_DATA_END */;
+        const compDataUrl = /* COMP_DATA_START */ ${compDataUrl ? `\`${compDataUrl}\`` : 'null'} /* COMP_DATA_END */;
 
         const refVideo = document.getElementById('refVideo');
         const compVideo = document.getElementById('compVideo');
-        const refSource = document.getElementById('refSource');
-        const compSource = document.getElementById('compSource');
+        const refSource = null;
+        const compSource = null;
         const playPauseBtn = document.getElementById('playPauseBtn');
         const playIcon = document.getElementById('playIcon');
         const pauseIcon = document.getElementById('pauseIcon');
@@ -285,31 +291,47 @@ export const exportStandaloneHtml = async (
         const modalText = document.getElementById('modalText');
         const closeModalBtn = document.getElementById('closeModalBtn');
 
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingProgress = document.getElementById('loadingProgress');
+
         let isPlaying = false;
         let isRefHidden = false;
 
         notesCount.textContent = notes.length;
 
-        async function loadVideo(videoElement, sourceElement, dataUrl) {
-            if (!dataUrl || !sourceElement) return;
+        async function loadVideo(videoElement, dataUrl, label) {
+            if (!dataUrl) return;
             try {
-                const mime = dataUrl.split(',')[0].match(/:(.*?);/)[1];
+                if (loadingProgress) loadingProgress.textContent = 'Loading ' + label + '...';
                 const response = await fetch(dataUrl);
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
-                sourceElement.type = mime;
-                sourceElement.src = url;
-                videoElement.load();
+                videoElement.src = url;
+                await new Promise((resolve) => {
+                    videoElement.onloadedmetadata = resolve;
+                    videoElement.onerror = resolve; // Continue on error
+                    videoElement.load();
+                });
             } catch (e) {
-                console.error("Failed to load video:", e);
+                console.error("Failed to load video via Blob, falling back to Data URL:", e);
                 videoElement.src = dataUrl;
+                videoElement.load();
             }
         }
 
-        Promise.all([
-            loadVideo(refVideo, refSource, refDataUrl),
-            loadVideo(compVideo, compSource, compDataUrl)
-        ]);
+        async function init() {
+            await Promise.all([
+                loadVideo(refVideo, refDataUrl, 'Reference'),
+                loadVideo(compVideo, compDataUrl, 'Comparison')
+            ]);
+            
+            if (loadingOverlay) {
+                loadingOverlay.style.opacity = '0';
+                setTimeout(() => loadingOverlay.style.display = 'none', 500);
+            }
+        }
+
+        init();
 
         function formatTime(seconds) {
             const mins = Math.floor(seconds / 60);
