@@ -4,11 +4,12 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff } from 'lucide-react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
 import { exportStandaloneHtml } from './exporter';
+import { importFromHtml } from './importer';
 
 // --- Components ---
 
@@ -235,9 +236,9 @@ const VideoSyncPlayer = ({
   };
 
   return (
-    <div className={cn("grid gap-4", (compVideo && !isRefHidden) ? "grid-cols-2" : "grid-cols-1")}>
+    <div className={cn("grid gap-0", (compVideo && !isRefHidden) ? "grid-cols-2" : "grid-cols-1")}>
       {!isRefHidden && (
-        <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-zinc-200 shadow-inner">
+        <div className="relative aspect-video bg-black overflow-hidden shadow-inner">
           {refUrl && (
             <video
               ref={refVideoRef}
@@ -280,7 +281,7 @@ const VideoSyncPlayer = ({
       )}
 
       {compVideo && (
-        <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-zinc-200 shadow-inner">
+        <div className="relative aspect-video bg-black overflow-hidden shadow-inner">
           {compUrl && (
             <video
               ref={compVideoRef}
@@ -363,11 +364,13 @@ const OffsetInput = ({ value, onChange }: { value: number; onChange: (val: numbe
 const ProjectViewer = ({ 
   project, 
   onBack,
-  onConfirmDelete
+  onConfirmDelete,
+  onProjectUpdate
 }: { 
   project: Project; 
   onBack: () => void;
   onConfirmDelete: (config: { title: string; message: string; onConfirm: () => void }) => void;
+  onProjectUpdate: (project: Project) => void;
 }) => {
   const [videos, setVideos] = useState<VideoAsset[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -381,6 +384,7 @@ const ProjectViewer = ({
   const [noteText, setNoteText] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('Processing video...');
   const [isRefMuted, setIsRefMuted] = useState(false);
   const [isCompMuted, setIsCompMuted] = useState(true);
   const [isRefHidden, setIsRefHidden] = useState(false);
@@ -393,6 +397,13 @@ const ProjectViewer = ({
   const [showControls, setShowControls] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  const [showLandscapeHint, setShowLandscapeHint] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setShowLandscapeHint(false), 2000);
+    return () => clearTimeout(timer);
+  }, []);
+
   const handleMouseMove = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
@@ -400,6 +411,10 @@ const ProjectViewer = ({
       if (isPlaying) setShowControls(false);
     }, 3000);
   };
+
+  useEffect(() => {
+    setProjectName(project.name);
+  }, [project.name]);
 
   useEffect(() => {
     if (!isPlaying) setShowControls(true);
@@ -449,6 +464,7 @@ const ProjectViewer = ({
     const file = e.target.files?.[0];
     if (!file) return;
     
+    setProcessingMessage('Adding video...');
     setIsProcessing(true);
     try {
       const newVideo: VideoAsset = {
@@ -534,6 +550,7 @@ const ProjectViewer = ({
     }
     const updatedProject = { ...project, name: projectName };
     await db.saveProject(updatedProject);
+    onProjectUpdate(updatedProject);
     setIsEditingProjectName(false);
   };
 
@@ -576,7 +593,7 @@ const ProjectViewer = ({
   };
 
   return (
-    <div className="min-h-screen bg-white flex flex-col">
+    <div className="h-screen bg-white flex flex-col overflow-hidden">
       {/* Header */}
       <header className="h-16 border-b border-zinc-100 px-6 flex items-center justify-between bg-white sticky top-0 z-10">
         <div className="flex items-center gap-4">
@@ -608,14 +625,18 @@ const ProjectViewer = ({
         <div className="flex items-center gap-2">
           <button 
             onClick={async () => {
+              setProcessingMessage('Starting export...');
               setIsProcessing(true);
               try {
-                await exportStandaloneHtml(project, videos, notes, selectedCompVideoId);
+                await exportStandaloneHtml(project, videos, notes, selectedCompVideoId, (msg) => {
+                  setProcessingMessage(msg);
+                });
               } catch (err) {
                 console.error('Export failed:', err);
                 alert('Export failed. The video files might be too large for your browser to process into a single HTML file.');
               } finally {
                 setIsProcessing(false);
+                setProcessingMessage('Processing video...');
               }
             }}
             disabled={isProcessing}
@@ -639,22 +660,31 @@ const ProjectViewer = ({
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col landscape:flex-row md:flex-row overflow-hidden relative">
+      <main className="flex-1 flex flex-col landscape:flex-row md:flex-row overflow-hidden relative min-h-0">
         {/* Mobile Landscape Reminder */}
-        <div className="landscape:hidden fixed inset-0 z-[100] pointer-events-none flex items-center justify-center p-6 bg-zinc-900/90 backdrop-blur-md opacity-0 portrait:opacity-100 transition-opacity duration-500">
-          <div className="text-center text-white">
-            <RefreshCw size={48} className="mx-auto mb-4 animate-spin-slow" />
-            <h3 className="text-xl font-bold mb-2">Better in Landscape</h3>
-            <p className="text-zinc-400 text-sm">Rotate your phone for the full side-by-side layout.</p>
-          </div>
-        </div>
+        <AnimatePresence>
+          {showLandscapeHint && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="landscape:hidden fixed inset-0 z-[100] pointer-events-none flex items-center justify-center p-6 bg-zinc-900/90 backdrop-blur-md"
+            >
+              <div className="text-center text-white">
+                <RefreshCw size={48} className="mx-auto mb-4 animate-spin-slow" />
+                <h3 className="text-xl font-bold mb-2">Better in Landscape</h3>
+                <p className="text-zinc-400 text-sm">Rotate your phone for the full side-by-side layout.</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Video Area */}
-        <div className="flex-1 p-6 overflow-y-auto bg-zinc-50 relative">
-          <div className="max-w-6xl mx-auto space-y-6">
+        <div className="flex-none landscape:flex-1 md:flex-1 p-0 bg-black relative overflow-hidden min-h-0">
+          <div className="w-full landscape:h-full md:h-full flex flex-col justify-center">
             {referenceVideo && (
               <div 
-                className="relative group rounded-2xl overflow-hidden bg-black shadow-2xl"
+                className="relative group w-full"
                 onMouseMove={handleMouseMove}
                 onMouseLeave={() => isPlaying && setShowControls(false)}
                 onClick={() => setShowControls(true)}
@@ -823,7 +853,7 @@ const ProjectViewer = ({
                               "p-4 rounded-xl border transition-all cursor-pointer",
                               selectedCompVideoId === v.id ? "border-zinc-900 bg-zinc-50" : "border-zinc-100 hover:border-zinc-300"
                             )}
-                            onClick={() => setSelectedCompVideoId(v.id)}
+                            onClick={() => setSelectedCompVideoId(selectedCompVideoId === v.id ? null : v.id)}
                           >
                             <div className="flex items-center justify-between mb-3">
                               {editingVideoId === v.id ? (
@@ -906,7 +936,7 @@ const ProjectViewer = ({
         </div>
 
         {/* Sidebar: Notes */}
-        <div className="w-full landscape:w-64 md:w-72 border-l border-zinc-100 bg-white flex flex-col h-[300px] landscape:h-auto md:h-auto">
+        <div className="w-full landscape:w-64 md:w-72 border-t landscape:border-t-0 md:border-t-0 landscape:border-l md:border-l border-zinc-100 bg-white flex flex-col flex-1 landscape:flex-none md:flex-none min-h-0">
           <div className="p-4 border-b border-zinc-100 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <StickyNote size={18} className="text-zinc-400" />
@@ -942,7 +972,6 @@ const ProjectViewer = ({
                   onClick={() => {
                     setCurrentTime(note.timestamp);
                     setIsPlaying(false);
-                    setViewingNoteId(note.id);
                   }}
                 >
                   <div className="flex items-center justify-between mb-1.5">
@@ -954,13 +983,11 @@ const ProjectViewer = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setNoteText(note.text);
-                          setEditingNoteId(note.id);
-                          setIsAddingNote(true);
+                          setViewingNoteId(note.id);
                         }}
                         className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-zinc-900 transition-opacity"
                       >
-                        <Pencil size={12} />
+                        <Info size={12} />
                       </button>
                       <button
                         onClick={async (e) => {
@@ -1112,7 +1139,7 @@ const ProjectViewer = ({
         )}
       </AnimatePresence>
 
-      <LoadingOverlay isVisible={isProcessing} />
+      <LoadingOverlay isVisible={isProcessing} message={processingMessage} />
     </div>
   );
 };
@@ -1124,6 +1151,11 @@ export default function App() {
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('Processing video...');
+  
+  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const htmlInputRef = useRef<HTMLInputElement>(null);
   
   const [confirmConfig, setConfirmConfig] = useState<{
     isOpen: boolean;
@@ -1151,6 +1183,7 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setProcessingMessage('Creating project...');
     setIsProcessing(true);
     try {
       const projectId = crypto.randomUUID();
@@ -1184,6 +1217,33 @@ export default function App() {
     }
   };
 
+  const handleImportHtml = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setProcessingMessage('Importing project from HTML...');
+    setIsProcessing(true);
+    try {
+      const reader = new FileReader();
+      const htmlContent = await new Promise<string>((resolve, reject) => {
+        reader.onload = (e) => resolve(e.target?.result as string);
+        reader.onerror = (e) => reject(e);
+        reader.readAsText(file);
+      });
+
+      const newProject = await importFromHtml(htmlContent);
+      
+      setProjects([newProject, ...projects]);
+      setCurrentProject(newProject);
+    } catch (err) {
+      console.error('Failed to import project:', err);
+      alert('Failed to import project. Please ensure the HTML file is a valid VideoNote export.');
+    } finally {
+      setIsProcessing(false);
+      setIsCreateMenuOpen(false);
+    }
+  };
+
   const handleDeleteProject = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setConfirmConfig({
@@ -1208,6 +1268,10 @@ export default function App() {
           project={currentProject} 
           onBack={() => setCurrentProject(null)}
           onConfirmDelete={(config) => setConfirmConfig({ ...config, isOpen: true })}
+          onProjectUpdate={(updated) => {
+            setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+            setCurrentProject(updated);
+          }}
         />
       ) : (
         <div className="min-h-screen bg-zinc-50 p-6 md:p-12">
@@ -1246,10 +1310,71 @@ export default function App() {
           </div>
 
           {/* FAB for mobile/desktop */}
-          <label className="fixed bottom-8 right-8 w-16 h-16 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-zinc-800 transition-all z-40 group cursor-pointer">
-            <Plus size={32} className="group-hover:rotate-90 transition-transform duration-300" />
-            <input type="file" accept="video/*" className="hidden" onChange={handleCreateProject} />
-          </label>
+          <div className="fixed bottom-8 right-8 z-40 flex flex-col items-end gap-3">
+            <AnimatePresence>
+              {isCreateMenuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.8, y: 20 }}
+                  className="bg-white border border-zinc-200 rounded-2xl shadow-2xl p-2 mb-2 flex flex-col gap-1 min-w-[200px]"
+                >
+                  <button
+                    onClick={() => videoInputRef.current?.click()}
+                    className="flex items-center gap-3 px-4 py-3 hover:bg-zinc-50 rounded-xl transition-colors text-left"
+                  >
+                    <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
+                      <Video size={18} />
+                    </div>
+                    <div>
+                      <div className="font-bold text-zinc-900 text-sm">New Video Project</div>
+                      <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Start from scratch</div>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => htmlInputRef.current?.click()}
+                    className="flex items-center gap-3 px-4 py-3 hover:bg-zinc-50 rounded-xl transition-colors text-left"
+                  >
+                    <div className="p-2 bg-blue-100 text-blue-600 rounded-lg">
+                      <Share size={18} />
+                    </div>
+                    <div>
+                      <div className="font-bold text-zinc-900 text-sm">Import HTML Project</div>
+                      <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Load previous export</div>
+                    </div>
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <button 
+              onClick={() => setIsCreateMenuOpen(!isCreateMenuOpen)}
+              className={cn(
+                "w-16 h-16 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-zinc-800 transition-all group",
+                isCreateMenuOpen && "rotate-45 bg-zinc-700"
+              )}
+            >
+              <Plus size={32} className="transition-transform duration-300" />
+            </button>
+            
+            <input 
+              ref={videoInputRef}
+              type="file" 
+              accept="video/*" 
+              className="hidden" 
+              onChange={(e) => {
+                handleCreateProject(e);
+                setIsCreateMenuOpen(false);
+              }} 
+            />
+            <input 
+              ref={htmlInputRef}
+              type="file" 
+              accept=".html" 
+              className="hidden" 
+              onChange={handleImportHtml} 
+            />
+          </div>
         </div>
       )}
 
@@ -1261,7 +1386,7 @@ export default function App() {
         message={confirmConfig.message}
       />
 
-      <LoadingOverlay isVisible={isProcessing} />
+      <LoadingOverlay isVisible={isProcessing} message={processingMessage} />
     </>
   );
 }
