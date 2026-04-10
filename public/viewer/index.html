@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Video + JSON Viewer</title>
+    <link rel="manifest" href="manifest.json">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+        #dropzone { border: 3px dashed #cbd5e1; border-radius: 20px; padding: 40px; text-align: center; cursor: pointer; }
+        video { width: 100%; margin-top: 20px; border-radius: 10px; background: #000; }
+        pre { background: #f1f5f9; padding: 15px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h2>Project Viewer</h2>
+    <div id="dropzone">Click or Drop ZIP here</div>
+    <input type="file" id="picker" accept=".zip" style="display:none">
+
+    <div id="output" style="display:none">
+        <video id="player" controls></video>
+        <h3>Metadata JSON:</h3>
+        <pre id="jsonDisplay"></pre>
+    </div>
+
+    <script>
+        // Register Service Worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js');
+        }
+
+        const dropzone = document.getElementById('dropzone');
+        const picker = document.getElementById('picker');
+
+        // Check for shared ZIP on load
+        window.addEventListener('load', async () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.has('shared')) {
+                const cache = await caches.open('viewer-temp-storage');
+                const response = await cache.match('/shared.zip');
+                if (response) {
+                    processZip(await response.blob());
+                    await cache.delete('/shared.zip');
+                }
+            }
+        });
+
+        dropzone.onclick = () => picker.click();
+        picker.onchange = (e) => processZip(e.target.files[0]);
+
+        async function processZip(blob) {
+            const zip = await JSZip.loadAsync(blob);
+            
+            // 1. Get JSON (replace 'metadata.json' with your actual filename)
+            const jsonFile = zip.file("metadata.json");
+            if (jsonFile) {
+                const text = await jsonFile.async("string");
+                document.getElementById('jsonDisplay').textContent = text;
+            }
+
+            // 2. Get Video (replace 'reference.mp4' with your actual filename)
+            const videoFile = zip.file("reference.mp4");
+            if (videoFile) {
+                const videoBlob = await videoFile.async("blob");
+                document.getElementById('player').src = URL.createObjectURL(videoBlob);
+            }
+
+            document.getElementById('output').style.display = 'block';
+            dropzone.style.display = 'none';
+        }
+    </script>
+</body>
+</html>
