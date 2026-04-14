@@ -6,16 +6,27 @@ import {defineConfig, loadEnv} from 'vite';
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
+    build: {
+      target: 'esnext',
+    },
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
     optimizeDeps: {
       exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
+      esbuildOptions: {
+        target: 'esnext',
+      },
     },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        '@ffmpeg/ffmpeg/dist/esm/index.js': path.resolve(__dirname, 'node_modules/@ffmpeg/ffmpeg/dist/esm/index.js'),
+        '@ffmpeg/util/dist/esm/index.js': path.resolve(__dirname, 'node_modules/@ffmpeg/util/dist/esm/index.js'),
+        'fabric/dist/fabric.mjs': path.resolve(__dirname, 'node_modules/fabric/dist/fabric.mjs'),
+        'fabric/dist/index.mjs': path.resolve(__dirname, 'node_modules/fabric/dist/index.mjs'),
+        'ffprobe-wasm/browser.mjs': path.resolve(__dirname, 'node_modules/ffprobe-wasm/browser.mjs'),
       },
     },
     server: {
