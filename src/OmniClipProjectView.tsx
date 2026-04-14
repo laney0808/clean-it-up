@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, Eye, Plus, RefreshCw, StickyNote, Video } from 'lucide-react';
 import { setupContext } from 'omniclip';
+import { getComponents, registerElements } from 'omniclip';
 import { omnislate } from 'omniclip/x/context/context.js';
 import { db, Note, Project, ProjectVideo } from './db';
 import { getOmniVideoFile, putOmniVideoFile } from './omniDb';
 import { cn, formatTimestamp } from './utils';
+
+registerElements(getComponents())
 
 const OMNICLIP_CANVAS = { width: 1920, height: 1080 };
 
@@ -62,23 +65,18 @@ const buildGridRects = (items: Array<{ width: number; height: number }>) => {
 };
 
 const configureOmniClipLayout = (context: any) => {
+  console.log('configuring omni layout');
   context.layout.reset_to_default();
 
   const [primaryPane] = context.layout.seeker.panes;
   if (!primaryPane) return;
 
-  context.layout.actions.split_pane(primaryPane.id, false);
-  const secondaryPane = context.layout.seeker.panes.find((pane: any) => pane.id !== primaryPane.id);
+  for (const leaf of [...primaryPane.children]) {
+    context.layout.actions.delete_leaf(leaf.id);
+  }
 
-  if (!secondaryPane) return;
-
-  const [, playerLeafIndex] = context.layout.actions.add_leaf(secondaryPane.id, 'MediaPlayerPanel');
-  context.layout.actions.add_leaf(secondaryPane.id, 'MediaPanel');
-  context.layout.actions.add_leaf(secondaryPane.id, 'ExportPanel');
-  context.layout.actions.add_leaf(secondaryPane.id, 'ProjectSettingsPanel');
-  context.layout.actions.set_pane_active_leaf(secondaryPane.id, playerLeafIndex);
-  context.layout.actions.resize(primaryPane.id, 40);
-  context.layout.actions.resize(secondaryPane.id, 60);
+  const [, playerLeafIndex] = context.layout.actions.add_leaf(primaryPane.id, 'MediaPlayerPanel');
+  context.layout.actions.set_pane_active_leaf(primaryPane.id, playerLeafIndex);
 };
 
 export function OmniClipProjectView({
@@ -104,6 +102,7 @@ export function OmniClipProjectView({
   );
 
   useEffect(() => {
+    console.log('loading project data...');
     let cancelled = false;
 
     const loadProjectData = async () => {
@@ -132,6 +131,7 @@ export function OmniClipProjectView({
   }, [project.id]);
 
   useEffect(() => {
+    console.log("loading omni UI & videos");
     let cancelled = false;
 
     const mountOmniClip = async () => {
@@ -145,7 +145,6 @@ export function OmniClipProjectView({
 
         configureOmniClipLayout(context);
         context.clear_project();
-        await context.controllers.media.get_imported_files();
 
         const editor = document.createElement('construct-editor');
         editor.className = 'block h-full w-full';
@@ -160,6 +159,7 @@ export function OmniClipProjectView({
             }),
           )
         ).filter(Boolean) as Array<{ video: ProjectVideo; file: File }>;
+        console.log('loaded project files:', projectFiles);
 
         if (cancelled || projectFiles.length === 0) return;
 
@@ -230,11 +230,13 @@ export function OmniClipProjectView({
   }, [videos]);
 
   const reloadProjectVideos = async () => {
+    console.log('reloading videos');
     const loadedVideos = await db.getProjectVideos(project.id);
     setVideos(sortVideos(loadedVideos));
   };
 
   const handleAddVideo = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    console.log('handling add video');
     const file = event.target.files?.[0];
     if (!file) return;
 

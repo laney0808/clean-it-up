@@ -31,6 +31,7 @@ export const putOmniVideoFile = async (hash: string, file: File) => {
 };
 
 export const getOmniVideoFile = async (hash: string) => {
+  console.log('getting video...');
   const database = await getOmniDb();
   const record = await database.get(OMNICLIP_STORE_NAME, hash);
   return (record as OmniClipStoredFile | undefined)?.file;
