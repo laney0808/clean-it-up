@@ -13,6 +13,27 @@ const OMNICLIP_CANVAS = { width: 1920, height: 1080 };
 
 type DrawerTab = 'videos' | 'notes';
 
+const getTimelineDurationSeconds = (context: any) => {
+  if (!context?.state?.effects?.length) return 0;
+
+  const timelineEndMs = context.state.effects.reduce((max: number, effect: any) => {
+    const effectEnd = effect.start_at_position + (effect.end - effect.start);
+    return Math.max(max, effectEnd);
+  }, 0);
+
+  return timelineEndMs / 1000;
+};
+
+const seekOmniClip = async (seconds: number) => {
+  console.log('seeking omni clip');
+  const context = omnislate.context;
+  if (!context) return;
+
+  const timecode = Math.max(0, seconds * 1000);
+  context.actions.set_timecode(timecode);
+  context.controllers.compositor.compose_effects(context.state.effects, timecode);
+};
+
 const sortVideos = (videos: ProjectVideo[]) =>
   [...videos].sort((a, b) => {
     if (a.role !== b.role) return a.role === 'reference' ? -1 : 1;
@@ -92,6 +113,10 @@ export function OmniClipProjectView({
   const [drawerTab, setDrawerTab] = useState<DrawerTab>('videos');
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [timelineDuration, setTimelineDuration] = useState(0);
+  const [scrubberValue, setScrubberValue] = useState(0);
+  const [isScrubbing, setIsScrubbing] = useState(false);
 
   const editorHostRef = useRef<HTMLDivElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
@@ -140,7 +165,7 @@ export function OmniClipProjectView({
       setIsSyncing(true);
 
       try {
-        setupContext();
+        setupContext(); //TODO: might be able to pass in project ID.
         const context = omnislate.context;
 
         configureOmniClipLayout(context);
@@ -214,6 +239,8 @@ export function OmniClipProjectView({
         context.actions.set_timecode(0);
         context.controllers.compositor.compose_effects(context.state.effects, 0);
         await context.controllers.compositor.set_current_time_of_audio_or_video_and_redraw(true, 0);
+        setCurrentTime(0);
+        setTimelineDuration(getTimelineDurationSeconds(context));
       } finally {
         if (!cancelled) setIsSyncing(false);
       }
@@ -228,6 +255,83 @@ export function OmniClipProjectView({
       }
     };
   }, [videos]);
+
+  useEffect(() => {
+    let frameId = 0;
+
+    const syncPlayhead = () => {
+      const context = omnislate.context;
+      if (context) {
+        const nextTime = context.state.timecode / 1000;
+        setCurrentTime(nextTime);
+
+        // When playback hits the end of the timeline, stop playing.
+        if (timelineDuration > 0 && context.state.is_playing && nextTime >= timelineDuration - 0.02) {
+          context.controllers.compositor.set_video_playing(false);
+        }
+      }
+      frameId = window.requestAnimationFrame(syncPlayhead);
+    };
+
+    frameId = window.requestAnimationFrame(syncPlayhead);
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [timelineDuration]);
+
+  useEffect(() => {
+    if (!isScrubbing) {
+      setScrubberValue(currentTime);
+    }
+  }, [currentTime, isScrubbing]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== ' ') return;
+
+      const target = event.target as HTMLElement | null;
+      const isEditable =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+
+      if (isEditable) return;
+
+      const context = omnislate.context;
+      if (!context) return;
+
+      event.preventDefault();
+      context.controllers.compositor.toggle_video_playing();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!isScrubbing) return;
+    const context = omnislate.context;
+    context.controllers.compositor.set_video_playing(false);
+
+    const handlePointerUp = () => {
+      const clamped = Math.max(0, Math.min(scrubberValue, timelineDuration || 0));
+      void seekOmniClip(clamped);
+
+      const context = omnislate.context;
+      if (context && timelineDuration > 0 && clamped >= timelineDuration - 0.02) {
+        context.controllers.compositor.set_video_playing(false);
+      }
+
+      setIsScrubbing(false);
+    };
+
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+    window.addEventListener('pointercancel', handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [isScrubbing, scrubberValue, timelineDuration]);
 
   const reloadProjectVideos = async () => {
     console.log('reloading videos');
@@ -309,20 +413,41 @@ export function OmniClipProjectView({
       </header>
 
       <div className="flex-1 min-h-0 flex">
-        <div className="flex-1 min-w-0 relative">
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex-1 min-h-0 relative">
           <div ref={editorHostRef} className="absolute inset-0" />
 
-          {!isLoading && videos.length === 0 && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center">
-              <div className="text-center text-zinc-300">
-                <Video size={36} className="mx-auto mb-3 opacity-50" />
-                <p className="font-medium">No videos available for this project.</p>
-                <p className="text-sm text-zinc-500 mt-1">
-                  Add a video to store it directly in OmniClip and start testing the editor.
-                </p>
+            {!isLoading && videos.length === 0 && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center">
+                <div className="text-center text-zinc-300">
+                  <Video size={36} className="mx-auto mb-3 opacity-50" />
+                  <p className="font-medium">No videos available for this project.</p>
+                  <p className="text-sm text-zinc-500 mt-1">
+                    Add a video to store it directly in OmniClip and start testing the editor.
+                  </p>
+                </div>
               </div>
+            )}
+          </div>
+
+          <div className="shrink-0 border-t border-white/10 bg-[#141821] px-4 py-3">
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-2 font-mono">
+              <span>{formatTimestamp(currentTime)}</span>
+              <span>{formatTimestamp(timelineDuration)}</span>
             </div>
-          )}
+            <div className="py-2">
+              <input
+                type="range"
+                min={0}
+                max={Math.max(timelineDuration, 0.01)}
+                step={0.01}
+                value={Math.min(scrubberValue, Math.max(timelineDuration, 0.01))}
+                onPointerDown={() => setIsScrubbing(true)}
+                onChange={(event) => setScrubberValue(Number(event.target.value))}
+                className="w-full omni-scrubber"
+              />
+            </div>
+          </div>
         </div>
 
         <aside className="w-[340px] shrink-0 border-l border-white/10 bg-[#141821] flex flex-col">
