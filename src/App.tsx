@@ -6,12 +6,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Trash2, Video } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { getComponents, registerElements } from 'omniclip';
+import { getComponents } from '@omnimedia/omniclip/x/get-components.js';
+import { registerElements } from '@omnimedia/omniclip/x/tools/register-elements.js';
+import { registerConstructEditorElement } from './omniclip';
 import { db, Project, ProjectVideo } from './db';
 import { deleteOmniVideoFile, putOmniVideoFile } from './omniDb';
 import { OmniClipProjectView } from './OmniClipProjectView';
 
 registerElements(getComponents());
+registerConstructEditorElement();
 
 const ProjectCard = ({
   project,

@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, Eye, Plus, RefreshCw, StickyNote, Video } from 'lucide-react';
+import { omnislate, setupContext } from './omniclip';
 import { db, Note, Project, ProjectVideo } from './db';
-import { type OmniContext, setupContext } from './omniclip';
 import { getOmniVideoFile, putOmniVideoFile } from './omniDb';
 import { cn, formatTimestampMS } from './utils';
-import { OmniClipScrubber } from './components/timeline';
+import {OmniClipScrubber} from './components/timeline'
 
 const OMNICLIP_CANVAS = { width: 1920, height: 1080 };
 
@@ -32,15 +32,15 @@ const getTimelineDurationMS = (context: any) => {
   return timelineEndMs;
 };
 
-// const seekOmniClip = async (seconds: number) => {
-//   console.log('seeking omni clip');
-//   const context = omnislate.context;
-//   if (!context) return;
+const seekOmniClip = async (seconds: number) => {
+  console.log('seeking omni clip');
+  const context = omnislate.context;
+  if (!context) return;
 
-//   const timecode = Math.max(0, seconds * 1000);
-//   context.actions.set_timecode(timecode);
-//   context.controllers.compositor.compose_effects(context.state.effects, timecode);
-// };
+  const timecode = Math.max(0, seconds * 1000);
+  context.actions.set_timecode(timecode);
+  context.controllers.compositor.compose_effects(context.state.effects, timecode);
+};
 
 const sortVideos = (videos: ProjectVideo[]) =>
   [...videos].sort((a, b) => {
@@ -57,22 +57,22 @@ const fitIntoRect = (
   const width = sourceWidth * scale;
   const height = sourceHeight * scale;
 
-  return {
-    width,
-    height,
-    scaleX: scale,
-    scaleY: scale,
-    position_on_canvas: {
-      x: bounds.x + bounds.width / 2,
-      y: bounds.y + bounds.height / 2,
-    },
-    rotation: 0,
-    pivot: {
-      x: sourceWidth / 2,
-      y: sourceHeight / 2,
-    },
-  };
-};
+	  return {
+	    width: sourceWidth,
+	    height: sourceHeight,
+	    scaleX: scale,
+	    scaleY: scale,
+	    position_on_canvas: {
+	      x: bounds.x + bounds.width / 2,
+	      y: bounds.y + bounds.height / 2,
+	    },
+	    rotation: 0,
+	    pivot: {
+	      x: sourceWidth / 2,
+	      y: sourceHeight / 2,
+	    },
+	  };
+	};
 
 const buildGridRects = (items: Array<{ width: number; height: number }>) => {
   if (items.length === 0) return [];
@@ -121,11 +121,7 @@ export function OmniClipProjectView({
   onProjectUpdate: (project: Project) => void;
 }) {
   console.log('state declarations')
-  const omnislate = useMemo(
-    () => setupContext(project.omniProjectId ?? project.id),
-    [project.omniProjectId, project.id],
-  );
-  const omniContext = omnislate.context as OmniContext | null;
+  const omniContext = omnislate.context;
   const [videos, setVideos] = useState<ProjectVideo[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>('videos');
@@ -185,8 +181,8 @@ export function OmniClipProjectView({
       setIsSyncing(true);
 
       try {
-        const context = omniContext;
-        if (!context) return;
+        setupContext(project.omniProjectId ?? project.id);
+        const context = omnislate.context;
 
         configureOmniClipLayout(context);
         context.clear_project();
@@ -206,37 +202,30 @@ export function OmniClipProjectView({
         ).filter(Boolean) as Array<{ video: ProjectVideo; file: File }>;
         console.log('loaded project files:', projectFiles);
 
-        if (cancelled || projectFiles.length === 0) {
-          context.actions.set_timecode(0);
-          context.controllers.compositor.compose_effects(context.state.effects, 0);
-          setCurrentTime(0);
-          setTimelineDuration(0);
-          setDurationMS(0);
-          return;
-        }
+        if (cancelled || projectFiles.length === 0) return;
 
-        const sources = await context.controllers.media.create_video_elements(
-          projectFiles.map(({ video, file }) => ({
-            hash: video.omniFileKey,
-            file,
-            kind: 'video',
-          })) as any,
-        );
+	        const sources = await context.controllers.media.create_video_elements(
+	          projectFiles.map(({ video, file }) => ({
+	            hash: video.omniFileKey,
+	            file,
+	            kind: 'video',
+	          })) as any,
+	        );
 
-        if (cancelled) return;
+	        if (cancelled) return;
 
-        const requiredTracks = Math.max(1, sources.length);
-        while (context.state.tracks.length < requiredTracks) {
-          context.actions.add_track();
-        }
+	        const requiredTracks = Math.max(1, sources.length);
+	        while (context.state.tracks.length < requiredTracks) {
+	          context.actions.add_track();
+	        }
 
-        const frameDuration = 1000 / context.state.timebase;
-        const rects = buildGridRects(
-          sources.map((source: any) => ({
-            width: source.element.videoWidth || OMNICLIP_CANVAS.width,
-            height: source.element.videoHeight || OMNICLIP_CANVAS.height,
-          })),
-        );
+	        const frameDuration = 1000 / context.state.timebase;
+	        const rects = buildGridRects(
+	          sources.map((source: any) => ({
+	            width: source.element.videoWidth || OMNICLIP_CANVAS.width,
+	            height: source.element.videoHeight || OMNICLIP_CANVAS.height,
+	          })),
+	        );
 
         sources.forEach((source: any, index: number) => {
           const projectFile = projectFiles[index];
@@ -287,14 +276,14 @@ export function OmniClipProjectView({
         editorHostRef.current.innerHTML = '';
       }
     };
-  }, [omniContext, videos]);
+  }, [videos]);
 
   useEffect(() => {
     console.log('change timeline duration')
     let frameId = 0;
 
     const syncPlayhead = () => {
-      const context = omniContext;
+      const context = omnislate.context;
       if (context) {
         const nextTime = context.state.timecode / 1000;
         setCurrentTime(nextTime);
@@ -310,7 +299,7 @@ export function OmniClipProjectView({
     frameId = window.requestAnimationFrame(syncPlayhead);
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [omniContext, timelineDuration]);
+  }, [timelineDuration]);
 
   useEffect(() => {
     console.log('synscrub')
@@ -332,7 +321,7 @@ export function OmniClipProjectView({
 
       if (isEditable) return;
 
-      const context = omniContext;
+      const context = omnislate.context;
       if (!context) return;
 
       event.preventDefault();
@@ -341,7 +330,7 @@ export function OmniClipProjectView({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [omniContext]);
+  }, []);
 
   // useEffect(() => {
   //   if (!isScrubbing) return;
@@ -471,7 +460,7 @@ export function OmniClipProjectView({
               <span>{formatTimestampMS(currentTime)}</span>
               <span>{formatTimestampMS(durationMS)}</span>
             </div> */}
-		            {/* {omniContext && (
+		            {omniContext && (
 		              <OmniClipScrubber
 		                context={omniContext}
 		                durationMS={durationMS}
@@ -479,7 +468,7 @@ export function OmniClipProjectView({
 		                timebase={omniContext.state.timebase}
 		                playheadDrag={omniContext.controllers.timeline.playheadDragHandler}
 		              />
-		            )} */}
+		            )}
             {/* <div className="py-2">
               <input
                 type="range"
