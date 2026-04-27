@@ -1,6 +1,7 @@
 import { Project, VideoAsset, Note } from './db';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
+import { ensureOmniContext } from './omni/omniclip';
 
 let ffmpeg: FFmpeg | null = null;
 
@@ -114,19 +115,32 @@ export const exportStandaloneHtml = async (
   const refVideo = videos.find(v => v.isReference);
   const compVideo = videos.find(v => v.id === selectedCompVideoId);
 
-  if (!refVideo?.data) {
-    throw new Error('Reference video data is missing.');
-  }
+  const loadVideoBuffer = async (video: VideoAsset) => {
+    if (video.data && video.type) {
+      return { buffer: video.data, type: video.type, filename: video.name };
+    }
+    if (video.omniFileHash) {
+      const ctx = ensureOmniContext(project.id);
+      const file = await ctx.controllers.media.get_file(video.omniFileHash);
+      if (file) {
+        return { buffer: await file.arrayBuffer(), type: file.type || 'video/mp4', filename: file.name || video.name };
+      }
+    }
+    throw new Error(`Video data is missing for "${video.name}".`);
+  };
 
   // Convert MOV to MP4 if necessary
   onProgress?.('Preparing reference video...');
-  const processedRef = await ensureMp4(refVideo.data, refVideo.type, refVideo.name);
+  if (!refVideo) throw new Error('Reference video is missing.');
+  const refLoaded = await loadVideoBuffer(refVideo);
+  const processedRef = await ensureMp4(refLoaded.buffer, refLoaded.type, refLoaded.filename);
   const refDataUrl = await bufferToDataUrl(processedRef.buffer, processedRef.type);
 
   let compDataUrl = null;
-  if (compVideo?.data) {
+  if (compVideo) {
     onProgress?.('Preparing comparison video...');
-    const processedComp = await ensureMp4(compVideo.data, compVideo.type, compVideo.name);
+    const compLoaded = await loadVideoBuffer(compVideo);
+    const processedComp = await ensureMp4(compLoaded.buffer, compLoaded.type, compLoaded.filename);
     compDataUrl = await bufferToDataUrl(processedComp.buffer, processedComp.type);
   }
 

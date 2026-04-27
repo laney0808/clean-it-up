@@ -10,10 +10,14 @@ export interface VideoAsset {
   id: string;
   projectId: string;
   name: string;
+  /** Points to the video file stored in OmniClip's IndexedDB (SHA-256 hex). */
+  omniFileHash?: string;
+
+  /** Legacy fields (pre-OmniClip). Kept for migration/back-compat only. */
   data?: ArrayBuffer;
   url?: string;
-  size: number;
-  type: string;
+  size?: number;
+  type?: string;
   offset: number; // in seconds, relative to reference
   isReference: boolean;
   createdAt: number;

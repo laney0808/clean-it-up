@@ -10,6 +10,9 @@ import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
 import { exportStandaloneHtml } from './exporter';
 import { importFromHtml } from './importer';
+import { OmniClipProjectView } from './OmniClipProjectView';
+import { ensureOmniContext, sha256Hex } from './omni/omniclip';
+import { generate_id } from '@benev/slate';
 
 // --- Components ---
 
@@ -1186,18 +1189,22 @@ export default function App() {
     setProcessingMessage('Creating project...');
     setIsProcessing(true);
     try {
-      const projectId = crypto.randomUUID();
+      const projectId = generate_id();
       const newProject: Project = {
         id: projectId,
         name: file.name.replace(/\.[^/.]+$/, ""),
         createdAt: Date.now(),
       };
 
+      const hash = await sha256Hex(file);
+      const ctx = ensureOmniContext(projectId);
+      await ctx.controllers.media.import_file(file);
+
       const refVideo: VideoAsset = {
         id: crypto.randomUUID(),
         projectId,
         name: file.name,
-        data: await file.arrayBuffer(),
+        omniFileHash: hash,
         size: file.size,
         type: file.type,
         offset: 0,
@@ -1264,7 +1271,7 @@ export default function App() {
           <div className="animate-pulse text-zinc-400 font-medium">Loading VideoNote...</div>
         </div>
       ) : currentProject ? (
-        <ProjectViewer 
+        <OmniClipProjectView
           project={currentProject} 
           onBack={() => setCurrentProject(null)}
           onConfirmDelete={(config) => setConfirmConfig({ ...config, isOpen: true })}
