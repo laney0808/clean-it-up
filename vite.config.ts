@@ -11,16 +11,39 @@ export default defineConfig(({mode}) => {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
     optimizeDeps: {
-      exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
+      exclude: [
+        '@omnimedia/omniclip',
+        '@benev/slate',
+        '@benev/toolbox',
+        '@benev/construct',
+        'lit',
+        'lit/directives/repeat.js',
+      ],
+      esbuildOptions: {
+        target: 'esnext',
+      },
+    },
+    build: {
+      target: 'esnext',
     },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        'ffprobe-wasm/browser.mjs':
+          path.resolve(__dirname, 'node_modules/ffprobe-wasm/browser.mjs'),
+        '@floating-ui/dom/dist/floating-ui.dom.browser.mjs':
+          path.resolve(__dirname, 'node_modules/@floating-ui/dom/dist/floating-ui.dom.browser.mjs'),
+        'web-demuxer/dist/web-demuxer.js':
+          path.resolve(__dirname, 'node_modules/web-demuxer/dist/web-demuxer.js'),
+        '@zip.js/zip.js/index.js':
+          path.resolve(__dirname, 'node_modules/@zip.js/zip.js/index.js'),
+        '@ffmpeg/ffmpeg/dist/esm/index.js':
+          path.resolve(__dirname, 'node_modules/@ffmpeg/ffmpeg/dist/esm/index.js'),
+        '@ffmpeg/util/dist/esm/index.js':
+          path.resolve(__dirname, 'node_modules/@ffmpeg/util/dist/esm/index.js'),
       },
     },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
     },
   };
