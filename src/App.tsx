@@ -10,9 +10,14 @@ import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
 import { exportStandaloneHtml } from './exporter';
 import { importFromHtml } from './importer';
-import VideoEditor from './VideoEditor';
+import PlayerPage from './pages/PlayerPage';
+import { Omni } from '@omnimedia/omnitool'
 
 // --- Components ---
+
+interface AppProps {
+  omni: Omni
+}
 
 const ProjectCard = ({ project, onClick, onDelete }: { project: Project; onClick: () => void; onDelete: (e: React.MouseEvent) => void; key?: React.Key }) => (
   <motion.div
@@ -1147,7 +1152,7 @@ const ProjectViewer = ({
 
 // --- Main App ---
 
-export default function App() {
+export default function App({omni}: AppProps) {
   const [showVideoEditor, setShowVideoEditor] = useState(false)
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
@@ -1259,9 +1264,11 @@ export default function App() {
     });
   };
 
+  return <PlayerPage omni={omni} />
+
   return (
     <>
-      {showVideoEditor ? <VideoEditor onBack={() => setShowVideoEditor(false)} /> :isLoading ? (
+      {isLoading ? (
         <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
           <div className="animate-pulse text-zinc-400 font-medium">Loading VideoNote...</div>
         </div>
