@@ -8,7 +8,7 @@ import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, S
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp } from './utils';
-import { exportStandaloneHtml } from './exporter';
+import { exportProjectZip } from './exporter';
 import { importFromHtml } from './importer';
 
 // --- Components ---
@@ -195,6 +195,22 @@ const VideoSyncPlayer = ({
     }
   }, [compBlob, compVideo?.id]);
 
+  useEffect(() => {
+    const ref = refVideoRef.current;
+    if (ref && refUrl) {
+      // Force reload when URL changes
+      ref.load();
+    }
+  }, [refUrl]);
+
+  useEffect(() => {
+    const comp = compVideoRef.current;
+    if (comp && compUrl) {
+      // Force reload when URL changes
+      comp.load();
+    }
+  }, [compUrl]);
+
   // Sync playback state - run when isPlaying OR when URLs are ready
   useEffect(() => {
     const ref = refVideoRef.current;
@@ -202,11 +218,29 @@ const VideoSyncPlayer = ({
     if (!ref) return;
 
     if (isPlaying) {
-      ref.play().catch(() => {});
-      comp?.play().catch(() => {});
+      const playRef = () => ref.play().catch(() => {});
+      const playComp = () => comp?.play().catch(() => {});
+
+      if (ref.readyState >= 2) {
+        playRef();
+      } else {
+        ref.oncanplay = playRef;
+      }
+
+      if (comp) {
+        if (comp.readyState >= 2) {
+          playComp();
+        } else {
+          comp.oncanplay = playComp;
+        }
+      }
     } else {
       ref.pause();
-      comp?.pause();
+      if (ref.oncanplay) ref.oncanplay = null;
+      if (comp) {
+        comp.pause();
+        if (comp.oncanplay) comp.oncanplay = null;
+      }
     }
   }, [isPlaying, refUrl, compUrl]);
 
@@ -216,18 +250,19 @@ const VideoSyncPlayer = ({
     const comp = compVideoRef.current;
     if (!ref) return;
 
-    // Only sync if the difference is significant (seeking)
-    if (Math.abs(ref.currentTime - currentTime) > 0.3) {
+    // Only sync if the difference is significant (seeking) or if we are exactly setting it
+    const threshold = isPlaying ? 0.3 : 0.01;
+    if (Math.abs(ref.currentTime - currentTime) > threshold) {
       ref.currentTime = currentTime;
     }
 
     if (comp && compVideo) {
       const compTime = currentTime + compVideo.offset;
-      if (Math.abs(comp.currentTime - compTime) > 0.3) {
+      if (Math.abs(comp.currentTime - compTime) > threshold) {
         comp.currentTime = Math.max(0, compTime);
       }
     }
-  }, [currentTime, compVideo?.offset]);
+  }, [currentTime, compVideo?.offset, isPlaying]);
 
   const handleRefTimeUpdate = () => {
     if (refVideoRef.current) {
@@ -242,14 +277,20 @@ const VideoSyncPlayer = ({
           {refUrl && (
             <video
               ref={refVideoRef}
-              src={refUrl}
               className="w-full h-full object-contain"
               onTimeUpdate={handleRefTimeUpdate}
-              onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
+              onLoadedMetadata={(e) => {
+                const d = e.currentTarget.duration;
+                if (!isNaN(d) && isFinite(d)) {
+                  onDurationChange(d);
+                }
+              }}
               playsInline
               muted={isRefMuted}
               preload="auto"
-            />
+            >
+              <source src={refUrl} type={refVideo.type} />
+            </video>
           )}
           <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
             Reference
@@ -270,14 +311,20 @@ const VideoSyncPlayer = ({
       {isRefHidden && refUrl && (
         <video
           ref={refVideoRef}
-          src={refUrl}
           className="hidden"
           onTimeUpdate={handleRefTimeUpdate}
-          onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
+          onLoadedMetadata={(e) => {
+            const d = e.currentTarget.duration;
+            if (!isNaN(d) && isFinite(d)) {
+              onDurationChange(d);
+            }
+          }}
           playsInline
           muted={isRefMuted}
           preload="auto"
-        />
+        >
+          <source src={refUrl} type={refVideo.type} />
+        </video>
       )}
 
       {compVideo && (
@@ -285,12 +332,13 @@ const VideoSyncPlayer = ({
           {compUrl && (
             <video
               ref={compVideoRef}
-              src={compUrl}
               className="w-full h-full object-contain"
               playsInline
               muted={isCompMuted}
               preload="auto"
-            />
+            >
+              <source src={compUrl} type={compVideo.type} />
+            </video>
           )}
           <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
             Comparison
@@ -404,6 +452,35 @@ const ProjectViewer = ({
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input or textarea
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' || 
+        target.tagName === 'TEXTAREA' || 
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setIsPlaying(prev => !prev);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setCurrentTime(prev => Math.max(0, prev - 1/30));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        // Use duration if available, otherwise just seek forward
+        setCurrentTime(prev => duration > 0 ? Math.min(duration, prev + 1/30) : prev + 1/30);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [duration]);
+
   const handleMouseMove = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
@@ -467,13 +544,14 @@ const ProjectViewer = ({
     setProcessingMessage('Adding video...');
     setIsProcessing(true);
     try {
+      const type = file.type || (file.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
       const newVideo: VideoAsset = {
         id: crypto.randomUUID(),
         projectId: project.id,
         name: file.name,
         data: await file.arrayBuffer(),
         size: file.size,
-        type: file.type,
+        type: type,
         offset: 0,
         isReference: false,
         createdAt: Date.now(),
@@ -498,11 +576,12 @@ const ProjectViewer = ({
 
     setIsProcessing(true);
     try {
+      const type = file.type || (file.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
       const updatedVideo: VideoAsset = {
         ...video,
         name: file.name,
         size: file.size,
-        type: file.type,
+        type: type,
         data: await file.arrayBuffer(),
       };
 
@@ -625,15 +704,15 @@ const ProjectViewer = ({
         <div className="flex items-center gap-2">
           <button 
             onClick={async () => {
-              setProcessingMessage('Starting export...');
+              setProcessingMessage('Preparing ZIP export...');
               setIsProcessing(true);
               try {
-                await exportStandaloneHtml(project, videos, notes, selectedCompVideoId, (msg) => {
+                await exportProjectZip(project, videos, notes, selectedCompVideoId, isRefHidden, (msg) => {
                   setProcessingMessage(msg);
                 });
               } catch (err) {
                 console.error('Export failed:', err);
-                alert('Export failed. The video files might be too large for your browser to process into a single HTML file.');
+                alert('Export failed. Please try again.');
               } finally {
                 setIsProcessing(false);
                 setProcessingMessage('Processing video...');
@@ -641,7 +720,7 @@ const ProjectViewer = ({
             }}
             disabled={isProcessing}
             className="p-2 rounded-xl hover:bg-zinc-100 text-zinc-500 transition-colors flex items-center gap-2 disabled:opacity-50"
-            title="Export Standalone HTML"
+            title="Export ZIP"
           >
             {isProcessing ? <RefreshCw size={20} className="animate-spin" /> : <Share size={20} />}
             <span className="text-sm font-semibold hidden md:inline">
@@ -804,7 +883,7 @@ const ProjectViewer = ({
                         <label className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1">
                           <Plus size={16} />
                           <span>Add Video</span>
-                          <input type="file" accept="video/*" className="hidden" onChange={handleAddVideo} />
+                          <input type="file" accept="video/*,video/webm,.webm" className="hidden" onChange={handleAddVideo} />
                         </label>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1187,6 +1266,7 @@ export default function App() {
     setIsProcessing(true);
     try {
       const projectId = crypto.randomUUID();
+      const type = file.type || (file.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
       const newProject: Project = {
         id: projectId,
         name: file.name.replace(/\.[^/.]+$/, ""),
@@ -1199,7 +1279,7 @@ export default function App() {
         name: file.name,
         data: await file.arrayBuffer(),
         size: file.size,
-        type: file.type,
+        type: type,
         offset: 0,
         isReference: true,
         createdAt: Date.now(),
@@ -1360,7 +1440,7 @@ export default function App() {
             <input 
               ref={videoInputRef}
               type="file" 
-              accept="video/*" 
+              accept="video/*,video/webm,.webm" 
               className="hidden" 
               onChange={(e) => {
                 handleCreateProject(e);
