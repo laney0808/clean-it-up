@@ -1,4 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
+import { StoredFileRef } from './utils/fileStorage';
 
 export interface Project {
   id: string;
@@ -12,6 +13,7 @@ export interface VideoAsset {
   name: string;
   data?: ArrayBuffer;
   url?: string;
+  fileRef?: StoredFileRef
   size: number;
   type: string;
   offset: number; // in seconds, relative to reference
@@ -48,13 +50,15 @@ let dbPromise: Promise<IDBPDatabase<VideoNoteDB>>;
 
 export function getDB() {
   if (!dbPromise) {
-    dbPromise = openDB<VideoNoteDB>('video-note-db', 1, {
-      upgrade(db) {
-        db.createObjectStore('projects', { keyPath: 'id' });
-        const videoStore = db.createObjectStore('videos', { keyPath: 'id' });
-        videoStore.createIndex('by-project', 'projectId');
-        const noteStore = db.createObjectStore('notes', { keyPath: 'id' });
-        noteStore.createIndex('by-project', 'projectId');
+    dbPromise = openDB<VideoNoteDB>('video-note-db', 2, {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          db.createObjectStore('projects', { keyPath: 'id' });
+          const videoStore = db.createObjectStore('videos', { keyPath: 'id' });
+          videoStore.createIndex('by-project', 'projectId');
+          const noteStore = db.createObjectStore('notes', { keyPath: 'id' });
+          noteStore.createIndex('by-project', 'projectId');
+        }
       },
     });
   }
