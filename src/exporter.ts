@@ -1,469 +1,671 @@
+import JSZip from 'jszip';
 import { Project, VideoAsset, Note } from './db';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { toBlobURL } from '@ffmpeg/util';
-
-let ffmpeg: FFmpeg | null = null;
 
 /**
- * Loads FFmpeg if not already loaded.
+ * Formats seconds to M:SS.
  */
-const loadFFmpeg = async () => {
-  if (ffmpeg) return ffmpeg;
-  ffmpeg = new FFmpeg();
-  // Using a CDN for the core files to avoid bundling issues
-  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-  await ffmpeg.load({
-    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-  });
-  return ffmpeg;
+const formatTime = (s: number): string => {
+  const m = Math.floor(s / 60);
+  const sec = String(Math.floor(s % 60)).padStart(2, "0");
+  return `${m}:${sec}`;
 };
 
 /**
- * Converts a video buffer to MP4 if it's a MOV file.
+ * Generates a ZIP file containing the project videos and a launcher HTML.
  */
-const ensureMp4 = async (buffer: ArrayBuffer, type: string, filename: string): Promise<{ buffer: ArrayBuffer, type: string }> => {
-  // If it's already mp4, return as is
-  if (type === 'video/mp4' || filename.toLowerCase().endsWith('.mp4')) {
-    return { buffer, type: 'video/mp4' };
-  }
-
-  // If it's MOV (video/quicktime), convert it
-  if (type === 'video/quicktime' || filename.toLowerCase().endsWith('.mov')) {
-    console.log(`[ensureMp4] Starting conversion for: ${filename} (${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
-    try {
-      console.log('[ensureMp4] Loading FFmpeg...');
-      const ffmpeg = await loadFFmpeg();
-      const inputName = `input_${crypto.randomUUID()}_${filename}`;
-      const outputName = `output_${crypto.randomUUID()}.mp4`;
-
-      console.log('[ensureMp4] Writing input file to FFmpeg FS...');
-      await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
-      
-      console.log('[ensureMp4] Executing FFmpeg conversion command...');
-      const startTime = performance.now();
-      // Convert to H.264 MP4. 
-      // -preset ultrafast for speed
-      // -crf 28 for reasonable quality/size balance
-      // -c:a aac for audio compatibility
-      await ffmpeg.exec([
-        '-i', inputName, 
-        '-c:v', 'libx264', 
-        '-preset', 'ultrafast', 
-        '-crf', '28', 
-        '-c:a', 'aac', 
-        '-movflags', '+faststart',
-        outputName
-      ]);
-      const endTime = performance.now();
-      console.log(`[ensureMp4] FFmpeg execution finished in ${((endTime - startTime) / 1000).toFixed(2)}s`);
-
-      console.log('[ensureMp4] Reading output file from FFmpeg FS...');
-      const data = await ffmpeg.readFile(outputName);
-      
-      console.log('[ensureMp4] Cleaning up FFmpeg FS...');
-      await ffmpeg.deleteFile(inputName);
-      await ffmpeg.deleteFile(outputName);
-
-      console.log('[ensureMp4] Conversion complete.');
-      return {
-        buffer: (data as Uint8Array).buffer,
-        type: 'video/mp4'
-      };
-    } catch (error) {
-      console.error('[ensureMp4] FFmpeg conversion failed, falling back to original:', error);
-      return { buffer, type };
-    }
-  }
-
-  return { buffer, type };
-};
-
-/**
- * Converts an ArrayBuffer to a Data URL using FileReader (more memory efficient).
- */
-const bufferToDataUrl = (buffer: ArrayBuffer, type: string): Promise<string> => {
-  console.log(`[bufferToDataUrl] Converting buffer to Data URL (${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB)...`);
-  const startTime = performance.now();
-  return new Promise((resolve, reject) => {
-    const blob = new Blob([buffer], { type });
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const endTime = performance.now();
-      console.log(`[bufferToDataUrl] Conversion complete in ${((endTime - startTime) / 1000).toFixed(2)}s`);
-      resolve(e.target?.result as string);
-    };
-    reader.onerror = (e) => {
-      console.error('[bufferToDataUrl] Conversion failed:', e);
-      reject(e);
-    };
-    reader.readAsDataURL(blob);
-  });
-};
-
-/**
- * Generates a standalone HTML file for a project.
- */
-export const exportStandaloneHtml = async (
+export const exportProjectZip = async (
   project: Project,
   videos: VideoAsset[],
   notes: Note[],
   selectedCompVideoId: string | null,
+  isRefHidden: boolean,
   onProgress?: (message: string) => void
 ) => {
+  const zip = new JSZip();
+  
   const refVideo = videos.find(v => v.isReference);
   const compVideo = videos.find(v => v.id === selectedCompVideoId);
 
-  if (!refVideo?.data) {
-    throw new Error('Reference video data is missing.');
+  const includeRef = !isRefHidden && !!refVideo?.data;
+  const includeComp = !!compVideo?.data;
+
+  if (!includeRef && !includeComp) {
+    throw new Error('No videos to export. Please ensure at least one video is visible.');
   }
 
-  // Convert MOV to MP4 if necessary
-  onProgress?.('Preparing reference video...');
-  const processedRef = await ensureMp4(refVideo.data, refVideo.type, refVideo.name);
-  const refDataUrl = await bufferToDataUrl(processedRef.buffer, processedRef.type);
+  onProgress?.('Preparing project data...');
 
-  let compDataUrl = null;
-  if (compVideo?.data) {
-    onProgress?.('Preparing comparison video...');
-    const processedComp = await ensureMp4(compVideo.data, compVideo.type, compVideo.name);
-    compDataUrl = await bufferToDataUrl(processedComp.buffer, processedComp.type);
+  // Add videos to ZIP
+  const exportedVideos: { id: string; name: string; offset: number; elId: string }[] = [];
+  
+  if (includeRef && refVideo.data) {
+    onProgress?.(`Adding ${refVideo.name}...`);
+    zip.file(refVideo.name, refVideo.data);
+    exportedVideos.push({
+      id: refVideo.id,
+      name: refVideo.name,
+      offset: 0,
+      elId: 'v1'
+    });
   }
 
-  onProgress?.('Packaging standalone viewer...');
+  if (includeComp && compVideo.data) {
+    onProgress?.(`Adding ${compVideo.name}...`);
+    zip.file(compVideo.name, compVideo.data);
+    exportedVideos.push({
+      id: compVideo.id,
+      name: compVideo.name,
+      offset: compVideo.offset || 0,
+      elId: includeRef ? 'v2' : 'v1'
+    });
+  }
 
-  const notesJson = JSON.stringify(notes);
-  const compOffset = compVideo?.offset || 0;
-  const hasComp = !!compDataUrl;
+  onProgress?.('Generating launcher...');
 
-  const htmlParts: string[] = [];
+  // Prepare data for HTML
+  const chapters = notes
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map(n => ({
+      label: n.text,
+      time: n.timestamp
+    }));
 
-  htmlParts.push(`<!DOCTYPE html>
+  const videoConfigs = exportedVideos.map(v => {
+    // Basic extension stripping for the template
+    const lastDot = v.name.lastIndexOf('.');
+    const displayName = lastDot > 0 ? v.name.substring(0, lastDot) : v.name;
+    return {
+      name: v.name,
+      displayName: displayName,
+      offset: v.offset,
+      elId: v.elId
+    };
+  });
+
+  // HTML Template
+  const htmlContent = `<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${project.name} - VideoNote Viewer</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { background-color: #000; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: white; }
-        .video-container { position: relative; width: 100%; height: 100%; background: black; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-        video { max-width: 100%; max-height: 100%; object-fit: contain; }
-        .notes-list { height: 100%; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
-        .note-item { transition: background-color 0.2s ease; }
-        .note-item:hover { background-color: rgba(255,255,255,0.1) !important; }
-        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 12px; height: 12px; background: #10b981; border-radius: 50%; cursor: pointer; }
-        .controls-overlay { background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.4) 40%, transparent 100%); transition: opacity 0.3s ease; }
-        .hidden-ref #refWrapper { display: none; }
-        .hidden-ref #compWrapper { width: 100% !important; }
-        .modal-backdrop { background-color: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
-        .loading-overlay { position: fixed; inset: 0; background: #000; z-index: 100; display: flex; flex-direction: column; items-center: center; justify-content: center; transition: opacity 0.5s ease; }
-        .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #10b981; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 1rem; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${project.name} - VideoNote Viewer v1.1</title>
+  <!-- Metadata for Import -->
+  <!-- /* PROJECT_ID_START */ ${project.id} /* PROJECT_ID_END */ -->
+  <!-- /* NOTES_START */ ${JSON.stringify(notes)} /* NOTES_END */ -->
+  <!-- /* OFFSET_START */ ${compVideo?.offset || 0} /* OFFSET_END */ -->
+  <!-- /* REF_NAME_START */ ${JSON.stringify(refVideo?.name || 'Reference Video')} /* REF_NAME_END */ -->
+  <!-- /* COMP_NAME_START */ ${compVideo ? JSON.stringify(compVideo.name) : 'null'} /* COMP_NAME_END */ -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-family: system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px 16px;
+      gap: 16px;
+    }
+
+    /* ── Layout ── */
+    .app-container {
+      width: 100%;
+      max-width: 1400px;
+      display: flex;
+      flex-direction: row;
+      gap: 24px;
+      align-items: flex-start;
+    }
+
+    @media (max-width: 1000px) {
+      .app-container { flex-direction: column; }
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 100%;
+    }
+
+    .side-panel {
+      width: 320px;
+      max-height: 80vh;
+      position: sticky;
+      top: 20px;
+      background: #141414;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    @media (max-width: 1000px) {
+      .side-panel { width: 100%; max-height: 400px; position: static; }
+    }
+
+    /* ── Video grid ── */
+    .video-row {
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    .video-wrap {
+      flex: 1;
+      min-width: 300px;
+      max-width: ${videoConfigs.length > 1 ? '680px' : '1000px'};
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      position: relative;
+    }
+
+    .video-error-overlay {
+      position: absolute;
+      inset: 22px 0 0 0;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(4px);
+      z-index: 10;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 20px;
+      border-radius: 8px;
+    }
+
+    .video-error-overlay.visible { display: flex; }
+
+    .video-error-overlay p {
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-bottom: 12px;
+    }
+
+    .relink-btn {
+      padding: 8px 16px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #eee;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .relink-btn:hover { background: #333; }
+
+    .video-wrap label {
+      font-size: 0.72rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    video {
+      width: 100%;
+      border-radius: 8px;
+      background: #000;
+    }
+
+    /* ── Controls ── */
+    .controls {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #141414;
+      padding: 16px;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+    }
+
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .scrubber-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      appearance: none;
+      cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 12px;
+      height: 12px;
+      background: #4a90d9;
+      border-radius: 50%;
+    }
+
+    .time-display {
+      font-size: 0.75rem;
+      color: #666;
+      font-variant-numeric: tabular-nums;
+      min-width: 80px;
+    }
+
+    #play-pause-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 1px solid #2a2a2a;
+      background: #1a1a1a;
+      color: #eee;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    #play-pause-btn:hover { background: #222; }
+
+    /* ── Tab list ── */
+    .side-panel-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #444;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .tab-list {
+      flex: 1;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #333 transparent;
+    }
+
+    .tab-list::-webkit-scrollbar { width: 6px; }
+    .tab-list::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+    .tab {
+      display: grid;
+      grid-template-columns: 56px 1fr;
+      align-items: start;
+      gap: 0;
+      border-bottom: 1px solid #1e1e1e;
+      cursor: pointer;
+      transition: background 0.12s;
+      background: #141414;
+    }
+
+    .tab:last-child { border-bottom: none; }
+    .tab:hover { background: #1c1c1c; }
+    .tab.active { background: #152030; }
+
+    .tab-time {
+      padding: 12px 0 12px 14px;
+      font-size: 0.72rem;
+      color: #555;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      line-height: 1.4;
+      padding-top: 13px;
+    }
+
+    .tab.active .tab-time { color: #4a90d9; }
+
+    .tab-body {
+      padding: 12px 14px 12px 8px;
+    }
+
+    .tab-label {
+      font-size: 0.85rem;
+      line-height: 1.4;
+      color: #ccc;
+      /* collapsed: single line with ellipsis */
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      transition: all 0.15s;
+    }
+
+    .tab.active .tab-label { color: #e8e8e8; }
+
+    /* expanded state — remove clamp */
+    .tab.expanded .tab-label {
+      -webkit-line-clamp: unset;
+      overflow: visible;
+      display: block;
+    }
+
+    .expand-hint {
+      font-size: 0.68rem;
+      color: #444;
+      margin-top: 3px;
+    }
+
+    .tab.expanded .expand-hint { display: none; }
+  </style>
 </head>
-<body class="h-screen flex flex-col overflow-hidden">
-    <div id="loadingOverlay" class="loading-overlay">
-        <div class="spinner"></div>
-        <div class="text-white/60 font-medium">Loading videos...</div>
-        <div id="loadingProgress" class="text-[10px] text-white/30 mt-2 uppercase tracking-widest">Processing Data Blobs</div>
-    </div>
-    <header class="h-14 border-b border-white/10 px-6 flex items-center justify-between bg-black shrink-0">
-        <h1 class="font-bold text-white truncate">${project.name}</h1>
-        <div class="text-[10px] font-bold text-white/40 uppercase tracking-widest">Standalone Viewer</div>
-    </header>
+<body>
 
-    <main class="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        <!-- Player Area -->
-        <div class="flex-1 relative group bg-black flex flex-col overflow-hidden" id="playerContainer">
-            <div class="flex-1 flex" id="videoLayout">
-                <div id="refWrapper" class="flex-1 border-r border-white/5 relative">
-                    <div class="absolute top-2 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white/70">Reference</div>
-                    <div class="video-container">
-                        <video id="refVideo" playsinline preload="auto"></video>
-                    </div>
-                </div>
-                ${hasComp ? `
-                <div id="compWrapper" class="flex-1 relative">
-                    <div class="absolute top-2 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white/70">Comparison</div>
-                    <div class="video-container">
-                        <video id="compVideo" playsinline muted preload="auto"></video>
-                    </div>
-                </div>` : ''}
-            </div>
-
-            <!-- Controls Overlay -->
-            <div id="controlsOverlay" class="controls-overlay absolute inset-x-0 bottom-0 z-20 pt-12 pb-4 px-4 opacity-0 group-hover:opacity-100">
-                <!-- Progress Bar -->
-                <div class="relative h-1.5 mb-3 group/progress cursor-pointer">
-                    <input type="range" id="progressBar" min="0" max="100" step="0.01" value="0" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10">
-                    <div class="absolute inset-y-0 left-0 right-0 bg-white/20 rounded-full overflow-hidden">
-                        <div id="progressFill" class="h-full bg-emerald-500 transition-all duration-100 relative" style="width: 0%">
-                            <div class="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-emerald-500 rounded-full shadow-lg"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-4">
-                        <button id="playPauseBtn" class="text-white hover:text-emerald-400 transition-colors">
-                            <svg id="playIcon" class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                            <svg id="pauseIcon" class="w-8 h-8 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                        </button>
-                        <div class="flex items-center gap-2 text-white/90 font-mono text-sm tabular-nums">
-                            <span id="timeDisplay">00:00.00</span>
-                            <span class="text-white/40">/</span>
-                            <span id="durationDisplay" class="text-white/60">00:00.00</span>
-                        </div>
-                    </div>
-
-                    <div class="flex items-center gap-2">
-                        <button id="toggleRefBtn" class="p-2 text-white hover:text-emerald-400 transition-colors" title="Toggle Reference Video">
-                            <svg id="eyeIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                            <svg id="eyeOffIcon" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24M1 1l22 22"/></svg>
-                        </button>
-                    </div>
-                </div>
-            </div>
+  <div class="app-container">
+    <div class="main-content">
+      <div class="video-row">
+        ${videoConfigs.map((v, i) => `
+        <div class="video-wrap">
+          <label>${v.displayName} ${v.offset !== 0 ? `(Offset: ${v.offset > 0 ? '+' : ''}${v.offset}s)` : ''}</label>
+          <video id="${v.elId}" src="${v.name}"></video>
+          <div id="overlay-${v.elId}" class="video-error-overlay">
+            <p>Video source unavailable: ${v.name}</p>
+            <input type="file" id="input-${v.elId}" accept="video/*" style="display:none">
+            <button class="relink-btn" onclick="document.getElementById('input-${v.elId}').click()">Link Video File</button>
+          </div>
         </div>
+        `).join('')}
+      </div>
 
-        <!-- Sidebar: Notes -->
-        <div class="w-full lg:w-80 border-l border-white/10 bg-black flex flex-col shrink-0">
-            <div class="p-4 border-b border-white/10 flex items-center justify-between">
-                <h2 class="font-bold text-white text-sm">Notes</h2>
-                <span id="notesCount" class="text-[10px] font-bold bg-white/10 px-2 py-0.5 rounded text-white/60">0</span>
-            </div>
-            <div id="notesList" class="notes-list p-2 space-y-1">
-                <!-- Notes will be injected here -->
-            </div>
+      <div class="controls">
+        <div class="control-row">
+          <div class="scrubber-wrap">
+            <span class="time-display" id="current-time">0:00</span>
+            <input type="range" id="scrubber" min="0" value="0" step="0.01">
+            <span class="time-display" id="total-time">0:00</span>
+          </div>
         </div>
-    </main>
-
-    <!-- Note Detail Modal -->
-    <div id="noteModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-6 modal-backdrop">
-        <div class="relative w-full max-w-lg bg-zinc-900 border border-white/10 rounded-3xl shadow-2xl overflow-hidden">
-            <div class="p-8">
-                <div class="flex items-center justify-between mb-6">
-                    <h3 class="text-xl font-bold text-white">Note Detail</h3>
-                    <div class="flex items-center gap-2 text-white/60 bg-white/5 px-3 py-1.5 rounded-xl border border-white/10">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                        <span id="modalTimestamp" class="text-sm font-mono font-bold">00:00.00</span>
-                    </div>
-                </div>
-                <div id="modalText" class="bg-white/5 border border-white/10 rounded-2xl p-6 text-white/90 whitespace-pre-wrap max-h-[60vh] overflow-y-auto leading-relaxed">
-                </div>
-                <div class="flex gap-3 mt-8">
-                    <button id="closeModalBtn" class="flex-1 px-6 py-3 rounded-xl font-semibold text-white bg-white/10 hover:bg-white/20 transition-colors">
-                        Close
-                    </button>
-                </div>
-            </div>
+        <div class="control-row">
+          <button id="play-pause-btn" title="Play/Pause">▶</button>
         </div>
+      </div>
     </div>
 
-    <script>
-        const notes = /* NOTES_START */ ${notesJson} /* NOTES_END */;
-        const offset = /* OFFSET_START */ ${compOffset} /* OFFSET_END */;
-        const refName = /* REF_NAME_START */ ${JSON.stringify(refVideo.name)} /* REF_NAME_END */;
-        const compName = /* COMP_NAME_START */ ${compVideo ? JSON.stringify(compVideo.name) : 'null'} /* COMP_NAME_END */;
-        const refDataUrl = /* REF_DATA_START */ \`${refDataUrl}\` /* REF_DATA_END */;
-        const compDataUrl = /* COMP_DATA_START */ ${compDataUrl ? `\`${compDataUrl}\`` : 'null'} /* COMP_DATA_END */;
+    <div class="side-panel">
+      <div class="side-panel-header">Notes & Timestamps</div>
+      <div class="tab-list" id="tab-list"></div>
+    </div>
+  </div>
 
-        const refVideo = document.getElementById('refVideo');
-        const compVideo = document.getElementById('compVideo');
-        const refSource = null;
-        const compSource = null;
-        const playPauseBtn = document.getElementById('playPauseBtn');
-        const playIcon = document.getElementById('playIcon');
-        const pauseIcon = document.getElementById('pauseIcon');
-        const timeDisplay = document.getElementById('timeDisplay');
-        const durationDisplay = document.getElementById('durationDisplay');
-        const progressBar = document.getElementById('progressBar');
-        const progressFill = document.getElementById('progressFill');
-        const notesList = document.getElementById('notesList');
-        const notesCount = document.getElementById('notesCount');
-        const toggleRefBtn = document.getElementById('toggleRefBtn');
-        const eyeIcon = document.getElementById('eyeIcon');
-        const eyeOffIcon = document.getElementById('eyeOffIcon');
-        const playerContainer = document.getElementById('playerContainer');
-        const noteModal = document.getElementById('noteModal');
-        const modalTimestamp = document.getElementById('modalTimestamp');
-        const modalText = document.getElementById('modalText');
-        const closeModalBtn = document.getElementById('closeModalBtn');
+  <script>
+    const chapters = ${JSON.stringify(chapters)};
 
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        const loadingProgress = document.getElementById('loadingProgress');
+    const videos = [
+      ${videoConfigs.map(v => `{ el: document.getElementById("${v.elId}"), offset: ${v.offset}, name: "${v.name}" }`).join(',\n      ')}
+    ];
 
-        let isPlaying = false;
-        let isRefHidden = false;
+    const playPauseBtn = document.getElementById("play-pause-btn");
+    const scrubber = document.getElementById("scrubber");
+    const currentTimeEl = document.getElementById("current-time");
+    const totalTimeEl = document.getElementById("total-time");
+    const listEl   = document.getElementById("tab-list");
 
-        notesCount.textContent = notes.length;
+    let isPlaying = false;
+    let duration = 0;
+    let initialized = false;
 
-        async function loadVideo(videoElement, dataUrl, label) {
-            if (!dataUrl) return;
-            try {
-                if (loadingProgress) loadingProgress.textContent = 'Loading ' + label + '...';
-                const response = await fetch(dataUrl);
-                const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
-                videoElement.src = url;
-                await new Promise((resolve) => {
-                    videoElement.onloadedmetadata = resolve;
-                    videoElement.onerror = resolve; // Continue on error
-                    videoElement.load();
-                });
-            } catch (e) {
-                console.error("Failed to load video via Blob, falling back to Data URL:", e);
-                videoElement.src = dataUrl;
-                videoElement.load();
-            }
+    // ── Video error handling & Re-linking ────────────────────
+    videos.forEach(({ el, name }) => {
+      if (!el) return;
+      const overlay = document.getElementById("overlay-" + el.id);
+      const input = document.getElementById("input-" + el.id);
+
+      const showPrompt = () => overlay.classList.add("visible");
+      const hidePrompt = () => overlay.classList.remove("visible");
+
+      el.onerror = showPrompt;
+
+      // Watchdog: If video stays in NOTHING state for 3s, prompt for link
+      setTimeout(() => {
+        if (el.readyState === 0) {
+           showPrompt();
         }
+      }, 3000);
 
-        async function init() {
-            await Promise.all([
-                loadVideo(refVideo, refDataUrl, 'Reference'),
-                loadVideo(compVideo, compDataUrl, 'Comparison')
-            ]);
-            
-            if (loadingOverlay) {
-                loadingOverlay.style.opacity = '0';
-                setTimeout(() => loadingOverlay.style.display = 'none', 500);
-            }
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const url = URL.createObjectURL(file);
+        el.src = url;
+        hidePrompt();
+        el.load(); // Ensure new source is initialized
+      };
+
+      el.addEventListener('loadedmetadata', updateDuration);
+      el.addEventListener('canplay', () => {
+        if (!initialized) {
+          updateDuration();
+          jumpTo(0);
+          initialized = true;
         }
+      });
+    });
 
-        init();
+    function updateDuration() {
+      const maxDur = videos.reduce((acc, { el, offset }) => {
+        if (!el || isNaN(el.duration)) return acc;
+        return Math.max(acc, el.duration - offset);
+      }, 0);
+      if (maxDur > 0) {
+        duration = maxDur;
+        scrubber.max = maxDur;
+        totalTimeEl.textContent = formatTime(maxDur);
+      }
+    }
 
-        function formatTime(seconds) {
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            const ms = Math.floor((seconds % 1) * 100);
-            return mins.toString().padStart(2, '0') + ':' + secs.toString().padStart(2, '0') + '.' + ms.toString().padStart(2, '0');
+    // ── Play/Pause ───────────────────────────────────────────
+    playPauseBtn.addEventListener("click", togglePlay);
+
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      playPauseBtn.textContent = isPlaying ? "⏸" : "▶";
+
+      if (!isPlaying) {
+        // Strict sync on PAUSE
+        const master = videos.find(v => v.offset === 0) || videos[0];
+        if (master && master.el) {
+          const base = master.el.currentTime - master.offset;
+          jumpTo(base);
         }
+      }
 
-        function updateUI() {
-            if (!refVideo.duration) return;
-            
-            const time = refVideo.currentTime;
-            timeDisplay.textContent = formatTime(time);
-            durationDisplay.textContent = formatTime(refVideo.duration);
-            const progress = (time / refVideo.duration) * 100;
-            progressBar.value = time;
-            progressFill.style.width = progress + '%';
+      videos.forEach(({ el }) => {
+        if (!el) return;
+        if (isPlaying) el.play().catch(() => {});
+        else el.pause();
+      });
+    }
 
-            if (compVideo) {
-                const targetTime = Math.max(0, time + offset);
-                if (Math.abs(compVideo.currentTime - targetTime) > 0.15) {
-                    compVideo.currentTime = targetTime;
-                }
-            }
+    // ── Scrubber ─────────────────────────────────────────────
+    scrubber.addEventListener("input", (e) => {
+      const val = parseFloat(e.target.value);
+      jumpTo(val);
+    });
+
+    // ── Jump to timestamp (pause + seek) ──────────────────────
+    function jumpTo(timestamp) {
+      videos.forEach(({ el, offset }) => {
+        if (!el) return;
+        el.currentTime = Math.max(0, timestamp + offset);
+      });
+      currentTimeEl.textContent = formatTime(timestamp);
+    }
+
+    // ── Update active notes & scrubber ────────────────────────
+    videos.forEach(({ el }) => {
+      if (!el) return;
+      el.addEventListener("timeupdate", () => {
+        if (el === (videos.find(v => v.offset === 0) || videos[0]).el) {
+          const base = el.currentTime - (videos.find(v => v.el === el)?.offset || 0);
+          scrubber.value = base;
+          currentTimeEl.textContent = formatTime(base);
+          
+          // Update active notes
+          let active = -1;
+          for (let i = 0; i < chapters.length; i++) {
+            if (base >= chapters[i].time) active = i;
+          }
+          setActive(active);
         }
+      });
+    });
 
-        function togglePlay() {
-            if (isPlaying) {
-                refVideo.pause();
-                if (compVideo) compVideo.pause();
-                playIcon.classList.remove('hidden');
-                pauseIcon.classList.add('hidden');
-            } else {
-                refVideo.play().catch(console.error);
-                if (compVideo) compVideo.play().catch(console.error);
-                playIcon.classList.add('hidden');
-                pauseIcon.classList.remove('hidden');
-            }
-            isPlaying = !isPlaying;
+    // ── Keyboard Controls ─────────────────────────────────────
+    window.addEventListener("keydown", (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        const base = videos[0].el.currentTime - videos[0].offset;
+        jumpTo(Math.max(0, base - 5));
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        const base = videos[0].el.currentTime - videos[0].offset;
+        jumpTo(Math.min(duration, base + 5));
+      }
+    });
+
+    // ── Build tab list ────────────────────────────────────────
+    const tabEls = [];
+
+    chapters.forEach((ch, i) => {
+      const div = document.createElement("div");
+      div.className = "tab";
+      const isLong = ch.label.length > 60;
+
+      // Use concatenation to avoid nesting template literals in the exporter
+      let html = '<div class="tab-time">' + formatTime(ch.time) + '</div>';
+      html += '<div class="tab-body">';
+      html += '<div class="tab-label">' + ch.label + '</div>';
+      if (isLong) html += '<div class="expand-hint">▸ click to expand</div>';
+      html += '</div>';
+      
+      div.innerHTML = html;
+
+      div.addEventListener("click", () => {
+        if (div.classList.contains("active")) {
+          div.classList.toggle("expanded");
+        } else {
+          tabEls.forEach(t => t.classList.remove("expanded"));
+          jumpTo(ch.time);
+          setActive(i);
         }
+      });
 
-        playPauseBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            togglePlay();
-        });
+      listEl.appendChild(div);
+      tabEls.push(div);
+    });
 
-        playerContainer.addEventListener('click', () => {
-            togglePlay();
-        });
+    function setActive(index) {
+      tabEls.forEach((el, i) => el.classList.toggle("active", i === index));
+    }
 
-        toggleRefBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            isRefHidden = !isRefHidden;
-            if (isRefHidden) {
-                playerContainer.classList.add('hidden-ref');
-                eyeIcon.classList.add('hidden');
-                eyeOffIcon.classList.remove('hidden');
-            } else {
-                playerContainer.classList.remove('hidden-ref');
-                eyeIcon.classList.remove('hidden');
-                eyeOffIcon.classList.add('hidden');
-            }
-        });
+    function formatTime(s) {
+      if (isNaN(s)) return "0:00";
+      const m   = Math.floor(s / 60);
+      const sec = String(Math.floor(s % 60)).padStart(2, "0");
+      return m + ":" + sec;
+    }
+  </script>
 
-        refVideo.addEventListener('timeupdate', updateUI);
-        refVideo.addEventListener('loadedmetadata', () => {
-            progressBar.max = refVideo.duration;
-            updateUI();
-        });
-
-        progressBar.addEventListener('input', (e) => {
-            const time = parseFloat(e.target.value);
-            refVideo.currentTime = time;
-            if (compVideo) compVideo.currentTime = Math.max(0, time + offset);
-            updateUI();
-        });
-
-        function showNoteDetail(note) {
-            modalTimestamp.textContent = formatTime(note.timestamp);
-            modalText.textContent = note.text;
-            noteModal.classList.remove('hidden');
-        }
-
-        closeModalBtn.addEventListener('click', () => {
-            noteModal.classList.add('hidden');
-        });
-
-        noteModal.addEventListener('click', (e) => {
-            if (e.target === noteModal) noteModal.classList.add('hidden');
-        });
-
-        notes.forEach(note => {
-            const div = document.createElement('div');
-            div.className = 'note-item group p-3 rounded-lg cursor-pointer transition-all border border-transparent';
-            div.dataset.id = note.id;
-            div.innerHTML = ' \
-                <div class="flex items-center justify-between mb-1"> \
-                    <div class="flex items-center gap-1.5 text-white/40"> \
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> \
-                        <span class="text-[10px] font-mono font-bold">' + formatTime(note.timestamp) + '</span> \
-                    </div> \
-                    <button class="info-btn opacity-0 group-hover:opacity-100 p-1 text-white/40 hover:text-white transition-all"> \
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> \
-                    </button> \
-                </div> \
-                <p class="text-xs text-white/80 line-clamp-2">' + note.text + '</p> \
-            ';
-            
-            div.onclick = (e) => {
-                e.stopPropagation();
-                refVideo.currentTime = note.timestamp;
-                if (compVideo) compVideo.currentTime = Math.max(0, note.timestamp + offset);
-                updateUI();
-            };
-
-            const infoBtn = div.querySelector('.info-btn');
-            infoBtn.onclick = (e) => {
-                e.stopPropagation();
-                showNoteDetail(note);
-            };
-
-            notesList.appendChild(div);
-        });
-    </script>
 </body>
-</html>`);
+</html>`;
 
-  const blob = new Blob(htmlParts, { type: 'text/html' });
+  zip.file('launcher.html', htmlContent);
+
+  onProgress?.('Generating ZIP file...');
+  const content = await zip.generateAsync({ type: 'blob' });
+  
+  const url = URL.createObjectURL(content);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${project.name.replace(/\s+/g, '_')}_export.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+/**
+ * Exports project metadata as a JSON file.
+ */
+export const exportProjectJson = (
+  project: Project,
+  videos: VideoAsset[],
+  notes: Note[]
+) => {
+  const exportData = {
+    version: '1.0',
+    project: {
+      name: project.name,
+      id: project.id
+    },
+    videos: videos.map(v => ({
+      name: v.name,
+      isReference: v.isReference,
+      offset: v.offset || 0,
+      id: v.id
+    })),
+    notes: notes.map(n => ({
+      text: n.text,
+      timestamp: n.timestamp
+    }))
+  };
+
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${project.name.replace(/\s+/g, '_')}_viewer.html`;
+  a.download = `${project.name.replace(/\s+/g, '_')}_project.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+/**
+ * Exports notes as a pure text file with timestamps adjusted by a video's offset.
+ */
+export const exportProjectText = (
+  project: Project,
+  notes: Note[],
+  selectedVideo: VideoAsset
+) => {
+  const content = notes
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map(note => {
+      // Adjusted timestamp = note.timestamp + video.offset
+      const adjustedSeconds = Math.floor(note.timestamp + (selectedVideo.offset || 0));
+      const mm = Math.floor(adjustedSeconds / 60).toString().padStart(2, '0');
+      const ss = (adjustedSeconds % 60).toString().padStart(2, '0');
+      return `${mm}:${ss} ${note.text}`;
+    })
+    .join('\n');
+
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${project.name.replace(/\s+/g, '_')}_notes.txt`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
