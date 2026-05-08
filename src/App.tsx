@@ -4,12 +4,12 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff, Info } from 'lucide-react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff, Info, FileJson, Archive, Download, Upload, FileText, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
-import { cn, formatTimestamp } from './utils';
-import { exportStandaloneHtml } from './exporter';
-import { importFromHtml } from './importer';
+import { cn, formatTimestamp, getFileNameWithoutExtension, splitFileName } from './utils';
+import { exportProjectZip, exportProjectJson, exportProjectText } from './exporter';
+import { importFromHtml, importFromJson } from './importer';
 
 // --- Components ---
 
@@ -51,13 +51,17 @@ const ConfirmationModal = ({
   onClose, 
   onConfirm, 
   title, 
-  message 
+  message,
+  confirmText = "Delete",
+  confirmVariant = "danger"
 }: { 
   isOpen: boolean; 
   onClose: () => void; 
   onConfirm: () => void; 
   title: string; 
   message: string;
+  confirmText?: string;
+  confirmVariant?: 'danger' | 'primary';
 }) => (
   <AnimatePresence>
     {isOpen && (
@@ -91,9 +95,12 @@ const ConfirmationModal = ({
                 onConfirm();
                 onClose();
               }}
-              className="flex-1 px-6 py-3 rounded-xl font-semibold bg-red-500 text-white hover:bg-red-600 transition-colors shadow-lg shadow-red-100"
+              className={cn(
+                "flex-1 px-6 py-3 rounded-xl font-semibold text-white transition-colors shadow-lg",
+                confirmVariant === 'danger' ? "bg-red-500 hover:bg-red-600 shadow-red-100" : "bg-zinc-900 hover:bg-zinc-800 shadow-zinc-100"
+              )}
             >
-              Delete
+              {confirmText}
             </button>
           </div>
         </motion.div>
@@ -151,7 +158,8 @@ const VideoSyncPlayer = ({
   onToggleRefMute,
   onToggleCompMute,
   onTimeUpdate,
-  onDurationChange
+  onDurationChange,
+  onRegisterVideo
 }: { 
   refVideo: VideoAsset; 
   compVideo?: VideoAsset; 
@@ -166,6 +174,7 @@ const VideoSyncPlayer = ({
   onToggleCompMute: () => void;
   onTimeUpdate: (time: number) => void;
   onDurationChange: (duration: number) => void;
+  onRegisterVideo?: (id: string, el: HTMLVideoElement | null) => void;
 }) => {
   const refVideoRef = useRef<HTMLVideoElement>(null);
   const compVideoRef = useRef<HTMLVideoElement>(null);
@@ -195,6 +204,22 @@ const VideoSyncPlayer = ({
     }
   }, [compBlob, compVideo?.id]);
 
+  useEffect(() => {
+    const ref = refVideoRef.current;
+    if (ref && refUrl) {
+      // Force reload when URL changes
+      ref.load();
+    }
+  }, [refUrl]);
+
+  useEffect(() => {
+    const comp = compVideoRef.current;
+    if (comp && compUrl) {
+      // Force reload when URL changes
+      comp.load();
+    }
+  }, [compUrl]);
+
   // Sync playback state - run when isPlaying OR when URLs are ready
   useEffect(() => {
     const ref = refVideoRef.current;
@@ -202,11 +227,29 @@ const VideoSyncPlayer = ({
     if (!ref) return;
 
     if (isPlaying) {
-      ref.play().catch(() => {});
-      comp?.play().catch(() => {});
+      const playRef = () => ref.play().catch(() => {});
+      const playComp = () => comp?.play().catch(() => {});
+
+      if (ref.readyState >= 2) {
+        playRef();
+      } else {
+        ref.oncanplay = playRef;
+      }
+
+      if (comp) {
+        if (comp.readyState >= 2) {
+          playComp();
+        } else {
+          comp.oncanplay = playComp;
+        }
+      }
     } else {
       ref.pause();
-      comp?.pause();
+      if (ref.oncanplay) ref.oncanplay = null;
+      if (comp) {
+        comp.pause();
+        if (comp.oncanplay) comp.oncanplay = null;
+      }
     }
   }, [isPlaying, refUrl, compUrl]);
 
@@ -216,18 +259,19 @@ const VideoSyncPlayer = ({
     const comp = compVideoRef.current;
     if (!ref) return;
 
-    // Only sync if the difference is significant (seeking)
-    if (Math.abs(ref.currentTime - currentTime) > 0.3) {
+    // Only sync if the difference is significant (seeking) or if we are exactly setting it
+    const threshold = isPlaying ? 0.3 : 0.01;
+    if (Math.abs(ref.currentTime - currentTime) > threshold) {
       ref.currentTime = currentTime;
     }
 
     if (comp && compVideo) {
       const compTime = currentTime + compVideo.offset;
-      if (Math.abs(comp.currentTime - compTime) > 0.3) {
+      if (Math.abs(comp.currentTime - compTime) > threshold) {
         comp.currentTime = Math.max(0, compTime);
       }
     }
-  }, [currentTime, compVideo?.offset]);
+  }, [currentTime, compVideo?.offset, isPlaying]);
 
   const handleRefTimeUpdate = () => {
     if (refVideoRef.current) {
@@ -241,15 +285,25 @@ const VideoSyncPlayer = ({
         <div className="relative aspect-video bg-black overflow-hidden shadow-inner">
           {refUrl && (
             <video
-              ref={refVideoRef}
-              src={refUrl}
+              ref={(el) => {
+                // @ts-ignore
+                refVideoRef.current = el;
+                onRegisterVideo?.(refVideo.id, el);
+              }}
               className="w-full h-full object-contain"
               onTimeUpdate={handleRefTimeUpdate}
-              onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
+              onLoadedMetadata={(e) => {
+                const d = e.currentTarget.duration;
+                if (!isNaN(d) && isFinite(d)) {
+                  onDurationChange(d);
+                }
+              }}
               playsInline
               muted={isRefMuted}
               preload="auto"
-            />
+            >
+              <source src={refUrl} type={refVideo.type} />
+            </video>
           )}
           <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
             Reference
@@ -269,28 +323,43 @@ const VideoSyncPlayer = ({
       {/* Hidden reference video for sync when hidden */}
       {isRefHidden && refUrl && (
         <video
-          ref={refVideoRef}
-          src={refUrl}
+          ref={(el) => {
+            // @ts-ignore
+            refVideoRef.current = el;
+            onRegisterVideo?.(refVideo.id, el);
+          }}
           className="hidden"
           onTimeUpdate={handleRefTimeUpdate}
-          onLoadedMetadata={(e) => onDurationChange(e.currentTarget.duration)}
+          onLoadedMetadata={(e) => {
+            const d = e.currentTarget.duration;
+            if (!isNaN(d) && isFinite(d)) {
+              onDurationChange(d);
+            }
+          }}
           playsInline
           muted={isRefMuted}
           preload="auto"
-        />
+        >
+          <source src={refUrl} type={refVideo.type} />
+        </video>
       )}
 
       {compVideo && (
         <div className="relative aspect-video bg-black overflow-hidden shadow-inner">
           {compUrl && (
             <video
-              ref={compVideoRef}
-              src={compUrl}
+              ref={(el) => {
+                // @ts-ignore
+                compVideoRef.current = el;
+                onRegisterVideo?.(compVideo.id, el);
+              }}
               className="w-full h-full object-contain"
               playsInline
               muted={isCompMuted}
               preload="auto"
-            />
+            >
+              <source src={compUrl} type={compVideo.type} />
+            </video>
           )}
           <div className="absolute top-4 left-4 px-2 py-1 bg-black/50 backdrop-blur-sm text-white text-xs rounded uppercase tracking-widest font-bold">
             Comparison
@@ -361,6 +430,112 @@ const OffsetInput = ({ value, onChange }: { value: number; onChange: (val: numbe
   );
 };
 
+interface MissingVideosTask {
+  projectId: string;
+  missingVideos: { id: string; name: string; isReference: boolean; offset: number }[];
+  onComplete: () => void;
+}
+
+const MissingVideosModal = ({ task, onClose }: { task: MissingVideosTask; onClose: () => void }) => {
+  const [files, setFiles] = useState<{ [id: string]: File }>({});
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const handleFileChange = (id: string, file: File | undefined) => {
+    if (file) {
+      setFiles(prev => ({ ...prev, [id]: file }));
+    }
+  };
+
+  const handleImport = async () => {
+    setIsProcessing(true);
+    try {
+      for (const video of task.missingVideos) {
+        const file = files[video.id];
+        if (file) {
+          const type = file.type || (file.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
+          const videoAsset: VideoAsset = {
+            id: video.id,
+            projectId: task.projectId,
+            name: file.name,
+            data: await file.arrayBuffer(),
+            size: file.size,
+            type: type,
+            offset: video.offset,
+            isReference: video.isReference,
+            createdAt: Date.now(),
+          };
+          await db.saveVideo(videoAsset);
+        }
+      }
+      task.onComplete();
+      onClose();
+    } catch (err) {
+      console.error('Failed to import videos:', err);
+      alert('Failed to import some videos. Please try again.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/40 backdrop-blur-sm">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden"
+      >
+        <div className="p-8">
+          <div className="flex items-center gap-4 mb-6">
+            <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl">
+              <Upload size={24} />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-zinc-900">Link Video Files</h2>
+              <p className="text-sm text-zinc-500">Please select the video files used in this project.</p>
+            </div>
+          </div>
+
+          <div className="space-y-4 mb-8">
+            {task.missingVideos.map(v => (
+              <div key={v.id} className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100 italic flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-zinc-700">
+                    {v.isReference ? 'Reference' : 'Comparison'}: {getFileNameWithoutExtension(v.name)}
+                  </span>
+                  {files[v.id] && <ShieldCheck size={16} className="text-emerald-500" />}
+                </div>
+                <input 
+                  type="file" 
+                  accept="video/*"
+                  onChange={(e) => handleFileChange(v.id, e.target.files?.[0])}
+                  className="text-xs text-zinc-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className="flex-1 px-6 py-3 bg-zinc-100 text-zinc-600 font-semibold rounded-2xl hover:bg-zinc-200 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleImport}
+              disabled={isProcessing || Object.keys(files).length === 0}
+              className="flex-1 px-6 py-3 bg-zinc-900 text-white font-semibold rounded-2xl hover:bg-zinc-800 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {isProcessing ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+              Finish Import
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 const ProjectViewer = ({ 
   project, 
   onBack,
@@ -376,10 +551,13 @@ const ProjectViewer = ({
   const [notes, setNotes] = useState<Note[]>([]);
   const [duration, setDuration] = useState(0);
   
-  // Viewer state
+  const [sidebarTab, setSidebarTab] = useState<'notes' | 'videos'>('notes');
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [selectedCompVideoId, setSelectedCompVideoId] = useState<string | null>(null);
+
+  const referenceVideo = useMemo(() => videos.find(v => v.isReference), [videos]);
+  const comparisonVideo = useMemo(() => videos.find(v => v.id === selectedCompVideoId), [videos, selectedCompVideoId]);
   const [isAddingNote, setIsAddingNote] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -390,6 +568,8 @@ const ProjectViewer = ({
   const [isRefHidden, setIsRefHidden] = useState(false);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectName, setProjectName] = useState(project.name);
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [showTextExportSubmenu, setShowTextExportSubmenu] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [viewingNoteId, setViewingNoteId] = useState<string | null>(null);
   const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
@@ -403,6 +583,72 @@ const ProjectViewer = ({
     const timer = setTimeout(() => setShowLandscapeHint(false), 2000);
     return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      // Robust sync on pause
+      const ref = videoRefs.current.get(referenceVideo?.id || '');
+      if (ref) {
+        setCurrentTime(ref.currentTime);
+      }
+    }
+  }, [isPlaying, referenceVideo?.id]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input or textarea
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' || 
+        target.tagName === 'TEXTAREA' || 
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setIsPlaying(prev => !prev);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setCurrentTime(prev => Math.max(0, prev - 1/30));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        // Use duration if available, otherwise just seek forward
+        setCurrentTime(prev => duration > 0 ? Math.min(duration, prev + 1/30) : prev + 1/30);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [duration]);
+
+  const [showStatusIndicator, setShowStatusIndicator] = useState(false);
+  const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+
+  const handleShowStatus = () => {
+    console.info('--- PROJECT STATUS DEBUG ---');
+    console.info('Project ID:', project.id);
+    console.info('Project Name:', project.name);
+    console.info('Timeline Position:', formatTimestamp(currentTime));
+    
+    // Log individual video states
+    videoRefs.current.forEach((ref, id) => {
+      const video = videos.find(v => v.id === id);
+      if (video && ref) {
+        console.info(`Video: ${video.name}`);
+        console.info(`  - Offset: ${video.offset.toFixed(3)}s`);
+        console.info(`  - Actual Playtime (File Time): ${ref.currentTime.toFixed(3)}s`);
+        console.info(`  - Sync Position (Timeline): ${(ref.currentTime - video.offset).toFixed(3)}s`);
+      }
+    });
+
+    console.info('----------------------------');
+    
+    // Provide visual feedback
+    setShowStatusIndicator(true);
+    setTimeout(() => setShowStatusIndicator(false), 2000);
+  };
 
   const handleMouseMove = () => {
     setShowControls(true);
@@ -467,13 +713,14 @@ const ProjectViewer = ({
     setProcessingMessage('Adding video...');
     setIsProcessing(true);
     try {
+      const type = file.type || (file.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
       const newVideo: VideoAsset = {
         id: crypto.randomUUID(),
         projectId: project.id,
         name: file.name,
         data: await file.arrayBuffer(),
         size: file.size,
-        type: file.type,
+        type: type,
         offset: 0,
         isReference: false,
         createdAt: Date.now(),
@@ -498,11 +745,12 @@ const ProjectViewer = ({
 
     setIsProcessing(true);
     try {
+      const type = file.type || (file.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
       const updatedVideo: VideoAsset = {
         ...video,
         name: file.name,
         size: file.size,
-        type: file.type,
+        type: type,
         data: await file.arrayBuffer(),
       };
 
@@ -560,11 +808,12 @@ const ProjectViewer = ({
       setEditingVideoId(null);
       return;
     }
-    if (video.name === newName) {
+    if (getFileNameWithoutExtension(video.name) === newName) {
       setEditingVideoId(null);
       return;
     }
-    const updated = { ...video, name: newName };
+    const { extension } = splitFileName(video.name);
+    const updated = { ...video, name: newName + extension };
     await db.saveVideo(updated);
     setVideos(videos.map(v => v.id === videoId ? updated : v));
     setEditingVideoId(null);
@@ -578,9 +827,6 @@ const ProjectViewer = ({
     await db.saveVideo(updated);
     setVideos(videos.map(v => v.id === videoId ? updated : v));
   };
-
-  const referenceVideo = useMemo(() => videos.find(v => v.isReference), [videos]);
-  const comparisonVideo = useMemo(() => videos.find(v => v.id === selectedCompVideoId), [videos, selectedCompVideoId]);
 
   const refBlob = referenceVideo ? resolvedBlobs[referenceVideo.id] : undefined;
   const compBlob = comparisonVideo ? resolvedBlobs[comparisonVideo.id] : undefined;
@@ -622,37 +868,140 @@ const ProjectViewer = ({
             </h1>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 relative">
           <button 
-            onClick={async () => {
-              setProcessingMessage('Starting export...');
-              setIsProcessing(true);
-              try {
-                await exportStandaloneHtml(project, videos, notes, selectedCompVideoId, (msg) => {
-                  setProcessingMessage(msg);
-                });
-              } catch (err) {
-                console.error('Export failed:', err);
-                alert('Export failed. The video files might be too large for your browser to process into a single HTML file.');
-              } finally {
-                setIsProcessing(false);
-                setProcessingMessage('Processing video...');
-              }
-            }}
+            onClick={handleShowStatus}
+            className={cn(
+              "p-2 rounded-xl transition-all flex items-center gap-2",
+              showStatusIndicator ? "bg-emerald-100 text-emerald-600" : "hover:bg-zinc-100 text-zinc-500"
+            )}
+            title="Debug Status"
+          >
+            {showStatusIndicator ? <ShieldCheck size={20} /> : <Info size={20} />}
+            <span className="text-sm font-semibold hidden md:inline">
+              {showStatusIndicator ? 'Logged!' : 'Status'}
+            </span>
+          </button>
+
+          <button 
+            onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
             disabled={isProcessing}
             className="p-2 rounded-xl hover:bg-zinc-100 text-zinc-500 transition-colors flex items-center gap-2 disabled:opacity-50"
-            title="Export Standalone HTML"
+            title="Export"
           >
             {isProcessing ? <RefreshCw size={20} className="animate-spin" /> : <Share size={20} />}
             <span className="text-sm font-semibold hidden md:inline">
               {isProcessing ? 'Exporting...' : 'Export'}
             </span>
           </button>
+
+          <AnimatePresence>
+            {isExportMenuOpen && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                className="absolute right-0 top-full mt-2 w-64 bg-white border border-zinc-100 rounded-2xl shadow-2xl p-1 z-50 overflow-hidden"
+              >
+                {!showTextExportSubmenu ? (
+                  <div className="flex flex-col">
+                    <button
+                      onClick={async () => {
+                        setIsExportMenuOpen(false);
+                        setProcessingMessage('Preparing ZIP export...');
+                        setIsProcessing(true);
+                        try {
+                          await exportProjectZip(project, videos, notes, selectedCompVideoId, isRefHidden, (msg) => {
+                            setProcessingMessage(msg);
+                          });
+                        } catch (err) {
+                          console.error('Export failed:', err);
+                          alert('Export failed. Please try again.');
+                        } finally {
+                          setIsProcessing(false);
+                        }
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-50 rounded-xl transition-colors text-left"
+                    >
+                      <Archive size={18} className="text-zinc-500" />
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-zinc-700">ZIP File</span>
+                        <span className="text-[10px] text-zinc-400">Project data + video files</span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsExportMenuOpen(false);
+                        exportProjectJson(project, videos, notes);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-50 rounded-xl transition-colors text-left"
+                    >
+                      <FileJson size={18} className="text-zinc-500" />
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-zinc-700">Project JSON</span>
+                        <span className="text-[10px] text-zinc-400">Metadata & notes only</span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowTextExportSubmenu(true);
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-zinc-50 rounded-xl transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-3">
+                        <FileText size={18} className="text-zinc-500" />
+                        <div className="flex flex-col">
+                        <span className="text-sm font-medium text-zinc-700">Pure Text</span>
+                        <span className="text-[10px] text-zinc-400">Formatted notes list</span>
+                      </div>
+                      </div>
+                      <ChevronRight size={16} className="text-zinc-300" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col">
+                    <div className="px-3 py-2 border-b border-zinc-50 flex items-center gap-2">
+                      <button 
+                        onClick={() => setShowTextExportSubmenu(false)}
+                        className="p-1 hover:bg-zinc-100 rounded-lg text-zinc-400 transition-colors"
+                      >
+                        <ChevronLeft size={16} />
+                      </button>
+                      <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Select Reference Video</span>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto p-1">
+                      {videos.map(v => (
+                        <button
+                          key={v.id}
+                          onClick={() => {
+                            exportProjectText(project, notes, v);
+                            setIsExportMenuOpen(false);
+                            setShowTextExportSubmenu(false);
+                          }}
+                          className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-50 rounded-xl transition-colors text-left"
+                        >
+                          <Video size={16} className={cn(v.isReference ? "text-blue-500" : "text-emerald-500")} />
+                          <div className="flex flex-col overflow-hidden">
+                            <span className="text-sm font-medium text-zinc-700 truncate">{getFileNameWithoutExtension(v.name)}</span>
+                            <span className="text-[10px] text-zinc-400 truncate">Offset: {v.offset?.toFixed(2)}s</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <button 
-            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+            onClick={() => {
+              setSidebarTab('videos');
+              setIsSettingsOpen(false); // Close inline if it was open (though we're removing it)
+            }}
             className={cn(
               "p-2 rounded-xl transition-colors",
-              isSettingsOpen ? "bg-zinc-900 text-white" : "hover:bg-zinc-100 text-zinc-500"
+              (isSettingsOpen || (sidebarTab === 'videos')) ? "bg-zinc-900 text-white" : "hover:bg-zinc-100 text-zinc-500"
             )}
           >
             <Settings2 size={20} />
@@ -703,6 +1052,10 @@ const ProjectViewer = ({
                   onToggleCompMute={() => setIsCompMuted(!isCompMuted)}
                   onTimeUpdate={setCurrentTime}
                   onDurationChange={setDuration}
+                  onRegisterVideo={(id, el) => {
+                    if (el) videoRefs.current.set(id, el);
+                    else videoRefs.current.delete(id);
+                  }}
                 />
 
                 {/* YouTube-style Controls Overlay */}
@@ -771,11 +1124,11 @@ const ProjectViewer = ({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              setIsSettingsOpen(!isSettingsOpen);
+                              setSidebarTab('videos');
                             }}
                             className={cn(
                               "p-2 rounded-lg transition-colors",
-                              isSettingsOpen ? "text-emerald-400" : "text-white hover:text-emerald-400"
+                              sidebarTab === 'videos' ? "text-emerald-400" : "text-white hover:text-emerald-400"
                             )}
                           >
                             <Settings2 size={20} />
@@ -788,74 +1141,210 @@ const ProjectViewer = ({
               </div>
             )}
 
-            {/* Settings / Comparison Selection */}
-            <AnimatePresence>
-              {isSettingsOpen && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="bg-white border border-zinc-200 rounded-2xl overflow-hidden"
-                >
-                  <div className="p-6 space-y-6">
-                    <div>
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="font-bold text-zinc-900">Comparison Videos</h3>
-                        <label className="text-sm font-semibold text-zinc-600 hover:text-zinc-900 cursor-pointer flex items-center gap-1">
-                          <Plus size={16} />
-                          <span>Add Video</span>
-                          <input type="file" accept="video/*" className="hidden" onChange={handleAddVideo} />
-                        </label>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {/* Reference Video Info */}
-                        {referenceVideo && (
-                          <div className="p-4 rounded-xl border border-zinc-100 bg-zinc-50/50">
-                            <div className="flex items-center justify-between mb-3">
-                              <span className="text-[10px] text-zinc-400 font-bold uppercase">Reference Video</span>
-                              <button
-                                onClick={() => {
-                                  setEditingVideoId(referenceVideo.id);
-                                  setTempVideoName(referenceVideo.name);
-                                }}
-                                className="text-zinc-400 hover:text-zinc-900 transition-colors"
-                              >
-                                <Pencil size={12} />
-                              </button>
-                            </div>
-                            {editingVideoId === referenceVideo.id ? (
-                              <input
-                                autoFocus
-                                type="text"
-                                value={tempVideoName}
-                                onChange={(e) => setTempVideoName(e.target.value)}
-                                onBlur={() => updateVideoName(referenceVideo.id, tempVideoName)}
-                                onKeyDown={(e) => e.key === 'Enter' && updateVideoName(referenceVideo.id, tempVideoName)}
-                                className="w-full bg-white border border-zinc-200 rounded px-2 py-1 font-medium text-sm focus:ring-2 focus:ring-zinc-900/5 outline-none"
-                              />
-                            ) : (
-                              <p 
-                                onClick={() => {
-                                  setEditingVideoId(referenceVideo.id);
-                                  setTempVideoName(referenceVideo.name);
-                                }}
-                                className="font-medium text-sm text-zinc-900 cursor-pointer hover:text-zinc-600 transition-colors"
-                              >
-                                {referenceVideo.name}
-                              </p>
-                            )}
+          </div>
+        </div>
+
+        {/* Sidebar */}
+        <div className="w-full landscape:w-72 md:w-80 border-t landscape:border-t-0 md:border-t-0 landscape:border-l md:border-l border-zinc-100 bg-white flex flex-col flex-1 landscape:flex-none md:flex-none min-h-0">
+          {/* Sidebar Tabs */}
+          <div className="flex border-b border-zinc-100">
+            <button
+              onClick={() => setSidebarTab('notes')}
+              className={cn(
+                "flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2",
+                sidebarTab === 'notes' ? "border-zinc-900 text-zinc-900" : "border-transparent text-zinc-400 hover:text-zinc-600"
+              )}
+            >
+              Notes
+            </button>
+            <button
+              onClick={() => setSidebarTab('videos')}
+              className={cn(
+                "flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2",
+                sidebarTab === 'videos' ? "border-zinc-900 text-zinc-900" : "border-transparent text-zinc-400 hover:text-zinc-600"
+              )}
+            >
+              Videos
+            </button>
+          </div>
+
+          <AnimatePresence mode="wait">
+            {sidebarTab === 'notes' ? (
+              <motion.div 
+                key="notes-tab"
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                className="flex-1 flex flex-col min-h-0"
+              >
+                <div className="p-4 border-b border-zinc-50 flex items-center justify-between bg-zinc-50/30">
+                  <div className="flex items-center gap-2">
+                    <StickyNote size={16} className="text-zinc-400" />
+                    <h2 className="font-bold text-zinc-900 text-xs">Project Notes</h2>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setIsPlaying(false);
+                        setIsAddingNote(true);
+                      }}
+                      className="p-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors shadow-sm"
+                      title="Add Note"
+                    >
+                      <Plus size={14} />
+                    </button>
+                    <span className="text-[10px] font-bold bg-white border border-zinc-100 px-2 py-0.5 rounded text-zinc-500">
+                      {notes.length}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                  <AnimatePresence mode="popLayout">
+                    {notes.map(note => (
+                      <motion.div
+                        key={note.id}
+                        layout
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="group bg-zinc-50 hover:bg-zinc-100 border border-zinc-100 rounded-xl p-3 transition-all cursor-pointer"
+                        onClick={() => {
+                          setCurrentTime(note.timestamp);
+                          setIsPlaying(false);
+                        }}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-1 text-zinc-500">
+                            <Clock size={12} />
+                            <span className="text-[10px] font-mono font-bold">{formatTimestamp(note.timestamp)}</span>
                           </div>
-                        )}
-                        {videos.filter(v => !v.isReference).map(v => (
-                          <div 
-                            key={v.id}
-                            className={cn(
-                              "p-4 rounded-xl border transition-all cursor-pointer",
-                              selectedCompVideoId === v.id ? "border-zinc-900 bg-zinc-50" : "border-zinc-100 hover:border-zinc-300"
-                            )}
-                            onClick={() => setSelectedCompVideoId(selectedCompVideoId === v.id ? null : v.id)}
-                          >
-                            <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setViewingNoteId(note.id);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-zinc-900 transition-opacity"
+                            >
+                              <Info size={12} />
+                            </button>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                onConfirmDelete({
+                                  title: 'Delete Note',
+                                  message: 'Are you sure you want to delete this note?',
+                                  onConfirm: async () => {
+                                    await db.deleteNote(note.id);
+                                    setNotes(notes.filter(n => n.id !== note.id));
+                                  }
+                                });
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-opacity"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-xs text-zinc-800 leading-relaxed line-clamp-2">{note.text}</p>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                  {notes.length === 0 && (
+                    <div className="h-full flex flex-col items-center justify-center text-zinc-400 py-12">
+                      <StickyNote size={32} className="mb-3 opacity-20" />
+                      <p className="text-sm">No notes yet</p>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            ) : (
+              <motion.div 
+                key="videos-tab"
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                className="flex-1 flex flex-col min-h-0"
+              >
+                <div className="p-4 border-b border-zinc-50 flex items-center justify-between bg-zinc-50/30">
+                  <div className="flex items-center gap-2">
+                    <Video size={16} className="text-zinc-400" />
+                    <h2 className="font-bold text-zinc-900 text-xs">Manage Videos</h2>
+                  </div>
+                  <label className="p-1.5 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors shadow-sm cursor-pointer">
+                    <Plus size={14} />
+                    <input type="file" accept="video/*" className="hidden" onChange={handleAddVideo} />
+                  </label>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-3 space-y-4">
+                  {/* Reference Video section */}
+                  {referenceVideo && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Reference</span>
+                      </div>
+                      <div className="p-3 rounded-xl border border-blue-100 bg-blue-50/30">
+                        <div className="flex items-center justify-between mb-2">
+                          {editingVideoId === referenceVideo.id ? (
+                            <input
+                              autoFocus
+                              type="text"
+                              value={tempVideoName}
+                              onChange={(e) => setTempVideoName(e.target.value)}
+                              onBlur={() => updateVideoName(referenceVideo.id, tempVideoName)}
+                              onKeyDown={(e) => e.key === 'Enter' && updateVideoName(referenceVideo.id, tempVideoName)}
+                              className="flex-1 bg-white border border-zinc-200 rounded px-2 py-1 text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500/20"
+                            />
+                          ) : (
+                            <span 
+                              className="text-xs font-semibold text-zinc-900 truncate"
+                              onClick={() => {
+                                setEditingVideoId(referenceVideo.id);
+                                setTempVideoName(getFileNameWithoutExtension(referenceVideo.name));
+                              }}
+                            >
+                              {getFileNameWithoutExtension(referenceVideo.name)}
+                            </span>
+                          )}
+                          <div className="flex items-center gap-1">
+                             <button
+                              onClick={() => {
+                                setEditingVideoId(referenceVideo.id);
+                                setTempVideoName(getFileNameWithoutExtension(referenceVideo.name));
+                              }}
+                              className="p-1 text-zinc-400 hover:text-zinc-900"
+                            >
+                              <Pencil size={12} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
+                          <Clock size={10} />
+                          <span>Main timeline source</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Comparison Videos section */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Comparisons</span>
+                    </div>
+                    <div className="space-y-2">
+                      {videos.filter(v => !v.isReference).map(v => (
+                        <div 
+                          key={v.id}
+                          className={cn(
+                            "p-3 rounded-xl border transition-all cursor-pointer",
+                            selectedCompVideoId === v.id ? "border-emerald-500 bg-emerald-50/30" : "border-zinc-100 bg-zinc-50/50 hover:border-zinc-200"
+                          )}
+                          onClick={() => setSelectedCompVideoId(selectedCompVideoId === v.id ? null : v.id)}
+                        >
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex-1 min-w-0 pr-2">
                               {editingVideoId === v.id ? (
                                 <input
                                   autoFocus
@@ -865,159 +1354,64 @@ const ProjectViewer = ({
                                   onChange={(e) => setTempVideoName(e.target.value)}
                                   onBlur={() => updateVideoName(v.id, tempVideoName)}
                                   onKeyDown={(e) => e.key === 'Enter' && updateVideoName(v.id, tempVideoName)}
-                                  className="bg-white border border-zinc-200 rounded px-2 py-1 font-medium text-sm focus:ring-2 focus:ring-zinc-900/5 outline-none flex-1 mr-2"
+                                  className="w-full bg-white border border-zinc-200 rounded px-2 py-1 text-xs font-semibold outline-none"
                                 />
                               ) : (
-                                <div className="flex items-center gap-2 flex-1 truncate">
-                                  <p 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setEditingVideoId(v.id);
-                                      setTempVideoName(v.name);
-                                    }}
-                                    className="font-medium text-sm text-zinc-900 truncate cursor-pointer hover:text-zinc-600 transition-colors"
-                                  >
-                                    {v.name}
-                                  </p>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs font-semibold text-zinc-900 truncate">{getFileNameWithoutExtension(v.name)}</span>
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setEditingVideoId(v.id);
-                                      setTempVideoName(v.name);
+                                      setTempVideoName(getFileNameWithoutExtension(v.name));
                                     }}
-                                    className="text-zinc-400 hover:text-zinc-900 transition-colors"
+                                    className="p-1 text-zinc-300 hover:text-zinc-600"
                                   >
-                                    <Pencil size={12} />
+                                    <Pencil size={10} />
                                   </button>
                                 </div>
                               )}
-                              <button 
-                                type="button"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  onConfirmDelete({
-                                    title: 'Delete Video',
-                                    message: 'Are you sure you want to delete this comparison video?',
-                                    onConfirm: async () => {
-                                      await db.deleteVideo(v.id);
-                                      if (selectedCompVideoId === v.id) setSelectedCompVideoId(null);
-                                      loadProjectData();
-                                    }
-                                  });
-                                }}
-                                className="text-zinc-400 hover:text-red-500 transition-colors"
-                                title="Delete comparison video"
-                              >
-                                <Trash2 size={20} />
-                              </button>
                             </div>
-                            <div className="flex items-center gap-3">
-                              <span className="text-xs text-zinc-500 font-bold uppercase">Offset</span>
-                              <OffsetInput 
-                                value={v.offset} 
-                                onChange={(newOffset) => updateVideoOffset(v.id, newOffset)} 
-                              />
-                              <span className="text-[10px] text-zinc-400">sec</span>
-                            </div>
+                            <button 
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                onConfirmDelete({
+                                  title: 'Delete Video',
+                                  message: 'Are you sure you want to delete this comparison video?',
+                                  onConfirm: async () => {
+                                    await db.deleteVideo(v.id);
+                                    if (selectedCompVideoId === v.id) setSelectedCompVideoId(null);
+                                    loadProjectData();
+                                  }
+                                });
+                              }}
+                              className="text-zinc-300 hover:text-red-500 transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
                           </div>
-                        ))}
-                        {videos.filter(v => !v.isReference).length === 0 && (
-                          <div className="col-span-2 py-8 text-center text-zinc-400 text-sm border border-dashed border-zinc-200 rounded-xl">
-                            No comparison videos added.
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] text-zinc-400 font-bold uppercase">Offset</span>
+                            <OffsetInput 
+                              value={v.offset} 
+                              onChange={(newOffset) => updateVideoOffset(v.id, newOffset)} 
+                            />
+                            <span className="text-[10px] text-zinc-400 font-mono">s</span>
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      ))}
+                      {videos.filter(v => !v.isReference).length === 0 && (
+                        <div className="py-8 text-center text-zinc-400 text-xs border border-dashed border-zinc-200 rounded-xl">
+                          No comparisons linked
+                        </div>
+                      )}
                     </div>
                   </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-
-        {/* Sidebar: Notes */}
-        <div className="w-full landscape:w-64 md:w-72 border-t landscape:border-t-0 md:border-t-0 landscape:border-l md:border-l border-zinc-100 bg-white flex flex-col flex-1 landscape:flex-none md:flex-none min-h-0">
-          <div className="p-4 border-b border-zinc-100 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <StickyNote size={18} className="text-zinc-400" />
-              <h2 className="font-bold text-zinc-900 text-sm">Notes</h2>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  setIsPlaying(false);
-                  setIsAddingNote(true);
-                }}
-                className="p-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors shadow-sm"
-                title="Add Note"
-              >
-                <Plus size={16} />
-              </button>
-              <span className="text-[10px] font-bold bg-zinc-100 px-2 py-0.5 rounded text-zinc-500">
-                {notes.length}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            <AnimatePresence mode="popLayout">
-              {notes.map(note => (
-                <motion.div
-                  key={note.id}
-                  layout
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  className="group bg-zinc-50 hover:bg-zinc-100 border border-zinc-100 rounded-xl p-3 transition-all cursor-pointer"
-                  onClick={() => {
-                    setCurrentTime(note.timestamp);
-                    setIsPlaying(false);
-                  }}
-                >
-                  <div className="flex items-center justify-between mb-1.5">
-                    <div className="flex items-center gap-1 text-zinc-500">
-                      <Clock size={12} />
-                      <span className="text-[10px] font-mono font-bold">{formatTimestamp(note.timestamp)}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setViewingNoteId(note.id);
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-zinc-900 transition-opacity"
-                      >
-                        <Info size={12} />
-                      </button>
-                      <button
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          onConfirmDelete({
-                            title: 'Delete Note',
-                            message: 'Are you sure you want to delete this note?',
-                            onConfirm: async () => {
-                              await db.deleteNote(note.id);
-                              setNotes(notes.filter(n => n.id !== note.id));
-                            }
-                          });
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-opacity"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  </div>
-                  <p className="text-xs text-zinc-800 leading-relaxed line-clamp-1">{note.text}</p>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-            {notes.length === 0 && (
-              <div className="h-full flex flex-col items-center justify-center text-zinc-400 py-12">
-                <StickyNote size={32} className="mb-3 opacity-20" />
-                <p className="text-sm">No notes yet</p>
-              </div>
+                </div>
+              </motion.div>
             )}
-          </div>
+          </AnimatePresence>
         </div>
       </main>
 
@@ -1157,11 +1551,15 @@ export default function App() {
   const videoInputRef = useRef<HTMLInputElement>(null);
   const htmlInputRef = useRef<HTMLInputElement>(null);
   
+  const [missingVideosTask, setMissingVideosTask] = useState<MissingVideosTask | null>(null);
+
   const [confirmConfig, setConfirmConfig] = useState<{
     isOpen: boolean;
     title: string;
     message: string;
     onConfirm: () => void;
+    confirmText?: string;
+    confirmVariant?: 'danger' | 'primary';
   }>({
     isOpen: false,
     title: '',
@@ -1187,9 +1585,10 @@ export default function App() {
     setIsProcessing(true);
     try {
       const projectId = crypto.randomUUID();
+      const type = file.type || (file.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
       const newProject: Project = {
         id: projectId,
-        name: file.name.replace(/\.[^/.]+$/, ""),
+        name: getFileNameWithoutExtension(file.name),
         createdAt: Date.now(),
       };
 
@@ -1199,7 +1598,7 @@ export default function App() {
         name: file.name,
         data: await file.arrayBuffer(),
         size: file.size,
-        type: file.type,
+        type: type,
         offset: 0,
         isReference: true,
         createdAt: Date.now(),
@@ -1217,27 +1616,63 @@ export default function App() {
     }
   };
 
-  const handleImportHtml = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setProcessingMessage('Importing project from HTML...');
     setIsProcessing(true);
     try {
       const reader = new FileReader();
-      const htmlContent = await new Promise<string>((resolve, reject) => {
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.onerror = (e) => reject(e);
-        reader.readAsText(file);
-      });
 
-      const newProject = await importFromHtml(htmlContent);
-      
-      setProjects([newProject, ...projects]);
-      setCurrentProject(newProject);
+      if (file.name.endsWith('.html')) {
+        setProcessingMessage('Importing project from HTML...');
+        const htmlContent = await new Promise<string>((resolve, reject) => {
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.onerror = (e) => reject(e);
+          reader.readAsText(file);
+        });
+
+        const newProject = await importFromHtml(htmlContent);
+        setProjects([newProject, ...projects]);
+        setCurrentProject(newProject);
+      } else if (file.name.endsWith('.json')) {
+        setProcessingMessage('Importing project metadata...');
+        const jsonContent = await new Promise<string>((resolve, reject) => {
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.onerror = (e) => reject(e);
+          reader.readAsText(file);
+        });
+
+        const { project, missingVideos } = await importFromJson(jsonContent);
+        
+        if (missingVideos.length > 0) {
+          setMissingVideosTask({
+            projectId: project.id,
+            missingVideos,
+            onComplete: () => {
+              setProjects([project, ...projects]);
+              setCurrentProject(project);
+            }
+          });
+        } else {
+          setProjects([project, ...projects]);
+          setCurrentProject(project);
+        }
+      }
     } catch (err) {
       console.error('Failed to import project:', err);
-      alert('Failed to import project. Please ensure the HTML file is a valid VideoNote export.');
+      if (err instanceof Error && err.message === 'PROJECT_COLLISION') {
+        setConfirmConfig({
+          isOpen: true,
+          title: 'Import Collision',
+          message: 'A project with the same ID already exists in your library. Import has been aborted to prevent overwriting your existing work.',
+          confirmText: 'OK',
+          confirmVariant: 'primary',
+          onConfirm: () => {}
+        });
+      } else {
+        alert('Failed to import project. Please ensure the file is a valid export.');
+      }
     } finally {
       setIsProcessing(false);
       setIsCreateMenuOpen(false);
@@ -1261,7 +1696,10 @@ export default function App() {
     <>
       {isLoading ? (
         <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
-          <div className="animate-pulse text-zinc-400 font-medium">Loading VideoNote...</div>
+          <div className="animate-pulse text-zinc-400 font-medium flex items-center gap-2">
+            Loading VideoNote
+            <span className="text-[10px] opacity-50">v1.1</span>
+          </div>
         </div>
       ) : currentProject ? (
         <ProjectViewer 
@@ -1278,7 +1716,10 @@ export default function App() {
           <div className="max-w-5xl mx-auto">
             <header className="flex items-center justify-between mb-12">
               <div>
-                <h1 className="text-4xl font-bold text-zinc-900 tracking-tight">VideoNote</h1>
+                <div className="flex items-baseline gap-3">
+                  <h1 className="text-4xl font-bold text-zinc-900 tracking-tight">VideoNote</h1>
+                  <span className="text-sm font-medium text-zinc-400">v1.1</span>
+                </div>
                 <p className="text-zinc-500 mt-2">Annotate and compare videos with precision.</p>
               </div>
             </header>
@@ -1339,8 +1780,8 @@ export default function App() {
                       <Share size={18} />
                     </div>
                     <div>
-                      <div className="font-bold text-zinc-900 text-sm">Import HTML Project</div>
-                      <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Load previous export</div>
+                      <div className="font-bold text-zinc-900 text-sm">Import Project</div>
+                      <div className="text-[10px] text-zinc-500 uppercase tracking-wider">HTML or JSON export</div>
                     </div>
                   </button>
                 </motion.div>
@@ -1360,7 +1801,7 @@ export default function App() {
             <input 
               ref={videoInputRef}
               type="file" 
-              accept="video/*" 
+              accept="video/*,video/webm,.webm" 
               className="hidden" 
               onChange={(e) => {
                 handleCreateProject(e);
@@ -1370,12 +1811,19 @@ export default function App() {
             <input 
               ref={htmlInputRef}
               type="file" 
-              accept=".html" 
+              accept=".html,.json" 
               className="hidden" 
-              onChange={handleImportHtml} 
+              onChange={handleImportFile} 
             />
           </div>
         </div>
+      )}
+
+      {missingVideosTask && (
+        <MissingVideosModal 
+          task={missingVideosTask} 
+          onClose={() => setMissingVideosTask(null)} 
+        />
       )}
 
       <ConfirmationModal
@@ -1384,6 +1832,8 @@ export default function App() {
         onConfirm={confirmConfig.onConfirm}
         title={confirmConfig.title}
         message={confirmConfig.message}
+        confirmText={confirmConfig.confirmText}
+        confirmVariant={confirmConfig.confirmVariant}
       />
 
       <LoadingOverlay isVisible={isProcessing} message={processingMessage} />

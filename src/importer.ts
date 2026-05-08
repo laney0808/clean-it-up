@@ -4,11 +4,20 @@ import { Project, VideoAsset, Note, db } from './db';
  * Parses a standalone HTML file and imports the project data.
  */
 export const importFromHtml = async (htmlContent: string): Promise<Project> => {
-  const projectId = crypto.randomUUID();
+  // Try to find project ID using markers
+  const idMatch = htmlContent.match(/\/\* PROJECT_ID_START \*\/ (.*?) \/\* PROJECT_ID_END \*\//);
+  const projectId = idMatch ? idMatch[1].trim() : crypto.randomUUID();
+
+  // Check for collision
+  const existing = await db.getProject(projectId);
+  if (existing) {
+    throw new Error('PROJECT_COLLISION');
+  }
+
   const now = Date.now();
 
   // Extract project name from <title>
-  const titleMatch = htmlContent.match(/<title>(.*?) - VideoNote Viewer<\/title>/);
+  const titleMatch = htmlContent.match(/<title>(.*?) - VideoNote Viewer/);
   const projectName = titleMatch ? titleMatch[1] : 'Imported Project';
 
   // Extract notes JSON using markers
@@ -180,4 +189,52 @@ const importWithDataUrls = async (
   }
 
   return newProject;
+};
+
+/**
+ * Parses a project JSON file and imports metadata.
+ */
+export const importFromJson = async (jsonContent: string): Promise<{ project: Project, missingVideos: { id: string, name: string, isReference: boolean, offset: number }[] }> => {
+  const data = JSON.parse(jsonContent);
+  const projectId = data.project?.id || crypto.randomUUID();
+
+  // Check for collision
+  const existing = await db.getProject(projectId);
+  if (existing) {
+    throw new Error('PROJECT_COLLISION');
+  }
+
+  const now = Date.now();
+
+  const newProject: Project = {
+    id: projectId,
+    name: data.project.name || 'Imported Project',
+    createdAt: now,
+  };
+
+  await db.saveProject(newProject);
+
+  // Import notes
+  if (data.notes && Array.isArray(data.notes)) {
+    for (const note of data.notes) {
+      const newNote: Note = {
+        id: crypto.randomUUID(),
+        projectId,
+        timestamp: note.timestamp,
+        text: note.text,
+        createdAt: now,
+      };
+      await db.saveNote(newNote);
+    }
+  }
+
+  // Identify missing videos
+  const missingVideos = (data.videos || []).map((v: any) => ({
+    id: v.id || crypto.randomUUID(),
+    name: v.name,
+    isReference: v.isReference,
+    offset: v.offset || 0
+  }));
+
+  return { project: newProject, missingVideos };
 };
