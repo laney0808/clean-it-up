@@ -25,7 +25,7 @@ export default function PlayerPage({ omni }: Props) {
   const [clips, setClips] = useState<ClipEntry[]>([])
   const [isEditing, setIsEditing] = useState(false)
 
-  //Local to canvas (will be gone after closing session)
+  // Local to canvas (will be gone after closing session)
   const containerRef = useRef<HTMLDivElement>(null)
   const [player, setPlayer] = useState<any>(null)
   const nextId = useRef(0)
@@ -104,13 +104,13 @@ export default function PlayerPage({ omni }: Props) {
 
     const newClips: ClipEntry[] = []
 
-    for (const file of Array.from(files)) {
+    for (const file of Array.from(files) as File[]) {
       const key = `clip_${nextId.current}`
-      const loaded = await omni.load({ [key]: Datafile.make(file) })
+      const loaded = await omni.load({ [key]: Datafile.make(file as File) })
 
       newClips.push({
         id: nextId.current++,
-        file,
+        file: file as File,
         datafile: loaded[key],
         startTime: 0,
         duration: 10000,  // default 10s, user can adjust
