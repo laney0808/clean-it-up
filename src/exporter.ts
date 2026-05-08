@@ -70,11 +70,17 @@ export const exportProjectZip = async (
       time: n.timestamp
     }));
 
-  const videoConfigs = exportedVideos.map(v => ({
-    name: v.name,
-    offset: v.offset,
-    elId: v.elId
-  }));
+  const videoConfigs = exportedVideos.map(v => {
+    // Basic extension stripping for the template
+    const lastDot = v.name.lastIndexOf('.');
+    const displayName = lastDot > 0 ? v.name.substring(0, lastDot) : v.name;
+    return {
+      name: v.name,
+      displayName: displayName,
+      offset: v.offset,
+      elId: v.elId
+    };
+  });
 
   // HTML Template
   const htmlContent = `<!DOCTYPE html>
@@ -82,7 +88,13 @@ export const exportProjectZip = async (
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${project.name} - Viewer</title>
+  <title>${project.name} - VideoNote Viewer v1.1</title>
+  <!-- Metadata for Import -->
+  <!-- /* PROJECT_ID_START */ ${project.id} /* PROJECT_ID_END */ -->
+  <!-- /* NOTES_START */ ${JSON.stringify(notes)} /* NOTES_END */ -->
+  <!-- /* OFFSET_START */ ${compVideo?.offset || 0} /* OFFSET_END */ -->
+  <!-- /* REF_NAME_START */ ${JSON.stringify(refVideo?.name || 'Reference Video')} /* REF_NAME_END */ -->
+  <!-- /* COMP_NAME_START */ ${compVideo ? JSON.stringify(compVideo.name) : 'null'} /* COMP_NAME_END */ -->
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -98,24 +110,99 @@ export const exportProjectZip = async (
       gap: 16px;
     }
 
+    /* ── Layout ── */
+    .app-container {
+      width: 100%;
+      max-width: 1400px;
+      display: flex;
+      flex-direction: row;
+      gap: 24px;
+      align-items: flex-start;
+    }
+
+    @media (max-width: 1000px) {
+      .app-container { flex-direction: column; }
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 100%;
+    }
+
+    .side-panel {
+      width: 320px;
+      max-height: 80vh;
+      position: sticky;
+      top: 20px;
+      background: #141414;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    @media (max-width: 1000px) {
+      .side-panel { width: 100%; max-height: 400px; position: static; }
+    }
+
     /* ── Video grid ── */
     .video-row {
       width: 100%;
-      max-width: 1100px;
-      display: grid;
-      grid-template-columns: ${videoConfigs.length > 1 ? '1fr 1fr' : '1fr'};
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
       gap: 12px;
     }
 
-    @media (max-width: 600px) {
-      .video-row { grid-template-columns: 1fr; }
-    }
-
     .video-wrap {
+      flex: 1;
+      min-width: 300px;
+      max-width: ${videoConfigs.length > 1 ? '680px' : '1000px'};
       display: flex;
       flex-direction: column;
       gap: 5px;
+      position: relative;
     }
+
+    .video-error-overlay {
+      position: absolute;
+      inset: 22px 0 0 0;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(4px);
+      z-index: 10;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 20px;
+      border-radius: 8px;
+    }
+
+    .video-error-overlay.visible { display: flex; }
+
+    .video-error-overlay p {
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-bottom: 12px;
+    }
+
+    .relink-btn {
+      padding: 8px 16px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #eee;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .relink-btn:hover { background: #333; }
 
     .video-wrap label {
       font-size: 0.72rem;
@@ -133,57 +220,82 @@ export const exportProjectZip = async (
     /* ── Controls ── */
     .controls {
       width: 100%;
-      max-width: 1100px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #141414;
+      padding: 16px;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+    }
+
+    .control-row {
       display: flex;
       align-items: center;
       gap: 12px;
+      width: 100%;
     }
 
-    #sync-btn {
-      padding: 7px 18px;
-      border-radius: 8px;
-      border: 1px solid #4a90d9;
-      background: #1a3a5c;
-      color: #a8d4ff;
-      font-size: 0.85rem;
-      font-weight: 600;
+    .scrubber-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      appearance: none;
       cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s;
     }
 
-    #sync-btn:hover { background: #1f4a75; }
+    input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 12px;
+      height: 12px;
+      background: #4a90d9;
+      border-radius: 50%;
+    }
 
-    #sync-status {
+    .time-display {
       font-size: 0.75rem;
-      padding: 4px 12px;
-      border-radius: 99px;
-      background: #1a3a1a;
-      border: 1px solid #2e6b2e;
-      color: #6fcf6f;
-      white-space: nowrap;
+      color: #666;
+      font-variant-numeric: tabular-nums;
+      min-width: 80px;
     }
 
-    #sync-status.stale {
-      background: #3a2a1a;
-      border-color: #8a5a1a;
-      color: #f0a050;
+    #play-pause-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 1px solid #2a2a2a;
+      background: #1a1a1a;
+      color: #eee;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
     }
+
+    #play-pause-btn:hover { background: #222; }
 
     /* ── Tab list ── */
-    .tab-list-wrap {
-      width: 100%;
-      max-width: 1100px;
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      border: 1px solid #2a2a2a;
-      border-radius: 10px;
-      overflow: hidden;
+    .side-panel-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #444;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
     }
 
     .tab-list {
-      max-height: 340px;
+      flex: 1;
       overflow-y: auto;
       scrollbar-width: thin;
       scrollbar-color: #333 transparent;
@@ -255,90 +367,180 @@ export const exportProjectZip = async (
 </head>
 <body>
 
-  <div class="video-row">
-    ${videoConfigs.map((v, i) => `
-    <div class="video-wrap">
-      <label>${v.name} — offset: ${v.offset > 0 ? '+' : ''}${v.offset}s</label>
-      <video id="${v.elId}" src="${v.name}" controls></video>
+  <div class="app-container">
+    <div class="main-content">
+      <div class="video-row">
+        ${videoConfigs.map((v, i) => `
+        <div class="video-wrap">
+          <label>${v.displayName} ${v.offset !== 0 ? `(Offset: ${v.offset > 0 ? '+' : ''}${v.offset}s)` : ''}</label>
+          <video id="${v.elId}" src="${v.name}"></video>
+          <div id="overlay-${v.elId}" class="video-error-overlay">
+            <p>Video source unavailable: ${v.name}</p>
+            <input type="file" id="input-${v.elId}" accept="video/*" style="display:none">
+            <button class="relink-btn" onclick="document.getElementById('input-${v.elId}').click()">Link Video File</button>
+          </div>
+        </div>
+        `).join('')}
+      </div>
+
+      <div class="controls">
+        <div class="control-row">
+          <div class="scrubber-wrap">
+            <span class="time-display" id="current-time">0:00</span>
+            <input type="range" id="scrubber" min="0" value="0" step="0.01">
+            <span class="time-display" id="total-time">0:00</span>
+          </div>
+        </div>
+        <div class="control-row">
+          <button id="play-pause-btn" title="Play/Pause">▶</button>
+        </div>
+      </div>
     </div>
-    `).join('')}
-  </div>
 
-  <div class="controls">
-    <button id="sync-btn">⏸ Sync</button>
-    <div id="sync-status">● Synced</div>
-  </div>
-
-  <div class="tab-list-wrap">
-    <div class="tab-list" id="tab-list"></div>
+    <div class="side-panel">
+      <div class="side-panel-header">Notes & Timestamps</div>
+      <div class="tab-list" id="tab-list"></div>
+    </div>
   </div>
 
   <script>
     const chapters = ${JSON.stringify(chapters)};
 
     const videos = [
-      ${videoConfigs.map(v => `{ el: document.getElementById("${v.elId}"), offset: ${v.offset} }`).join(',\n      ')}
+      ${videoConfigs.map(v => `{ el: document.getElementById("${v.elId}"), offset: ${v.offset}, name: "${v.name}" }`).join(',\n      ')}
     ];
 
-    const statusEl = document.getElementById("sync-status");
-    const syncBtn  = document.getElementById("sync-btn");
+    const playPauseBtn = document.getElementById("play-pause-btn");
+    const scrubber = document.getElementById("scrubber");
+    const currentTimeEl = document.getElementById("current-time");
+    const totalTimeEl = document.getElementById("total-time");
     const listEl   = document.getElementById("tab-list");
+
+    let isPlaying = false;
+    let duration = 0;
+    let initialized = false;
+
+    // ── Video error handling & Re-linking ────────────────────
+    videos.forEach(({ el, name }) => {
+      if (!el) return;
+      const overlay = document.getElementById("overlay-" + el.id);
+      const input = document.getElementById("input-" + el.id);
+
+      const showPrompt = () => overlay.classList.add("visible");
+      const hidePrompt = () => overlay.classList.remove("visible");
+
+      el.onerror = showPrompt;
+
+      // Watchdog: If video stays in NOTHING state for 3s, prompt for link
+      setTimeout(() => {
+        if (el.readyState === 0) {
+           showPrompt();
+        }
+      }, 3000);
+
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const url = URL.createObjectURL(file);
+        el.src = url;
+        hidePrompt();
+        el.load(); // Ensure new source is initialized
+      };
+
+      el.addEventListener('loadedmetadata', updateDuration);
+      el.addEventListener('canplay', () => {
+        if (!initialized) {
+          updateDuration();
+          jumpTo(0);
+          initialized = true;
+        }
+      });
+    });
+
+    function updateDuration() {
+      const maxDur = videos.reduce((acc, { el, offset }) => {
+        if (!el || isNaN(el.duration)) return acc;
+        return Math.max(acc, el.duration - offset);
+      }, 0);
+      if (maxDur > 0) {
+        duration = maxDur;
+        scrubber.max = maxDur;
+        totalTimeEl.textContent = formatTime(maxDur);
+      }
+    }
+
+    // ── Play/Pause ───────────────────────────────────────────
+    playPauseBtn.addEventListener("click", togglePlay);
+
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      playPauseBtn.textContent = isPlaying ? "⏸" : "▶";
+
+      if (!isPlaying) {
+        // Strict sync on PAUSE
+        const master = videos.find(v => v.offset === 0) || videos[0];
+        if (master && master.el) {
+          const base = master.el.currentTime - master.offset;
+          jumpTo(base);
+        }
+      }
+
+      videos.forEach(({ el }) => {
+        if (!el) return;
+        if (isPlaying) el.play().catch(() => {});
+        else el.pause();
+      });
+    }
+
+    // ── Scrubber ─────────────────────────────────────────────
+    scrubber.addEventListener("input", (e) => {
+      const val = parseFloat(e.target.value);
+      jumpTo(val);
+    });
 
     // ── Jump to timestamp (pause + seek) ──────────────────────
     function jumpTo(timestamp) {
       videos.forEach(({ el, offset }) => {
         if (!el) return;
-        el.pause();
         el.currentTime = Math.max(0, timestamp + offset);
       });
-      setSynced(true);
+      currentTimeEl.textContent = formatTime(timestamp);
     }
 
-    // ── Sync button ───────────────────────────────────────────
-    syncBtn.addEventListener("click", () => {
-      const baseTimes = videos.map(({ el, offset }) => el ? el.currentTime - offset : 0);
-      const earliest  = Math.min(...baseTimes);
-      videos.forEach(({ el, offset }) => {
-        if (!el) return;
-        el.pause();
-        el.currentTime = Math.max(0, earliest + offset);
-      });
-      setSynced(true);
-    });
-
-    // ── Stale detection ───────────────────────────────────────
+    // ── Update active notes & scrubber ────────────────────────
     videos.forEach(({ el }) => {
       if (!el) return;
-      el.addEventListener("seeking", () => setSynced(false));
+      el.addEventListener("timeupdate", () => {
+        if (el === (videos.find(v => v.offset === 0) || videos[0]).el) {
+          const base = el.currentTime - (videos.find(v => v.el === el)?.offset || 0);
+          scrubber.value = base;
+          currentTimeEl.textContent = formatTime(base);
+          
+          // Update active notes
+          let active = -1;
+          for (let i = 0; i < chapters.length; i++) {
+            if (base >= chapters[i].time) active = i;
+          }
+          setActive(active);
+        }
+      });
     });
-
-    function setSynced(synced) {
-      statusEl.textContent = synced ? "● Synced" : "● Out of sync";
-      statusEl.className   = synced ? "" : "stale";
-    }
 
     // ── Keyboard Controls ─────────────────────────────────────
     window.addEventListener("keydown", (e) => {
-      // Don't trigger if user is typing (though launcher has no inputs currently)
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       if (e.code === "Space") {
         e.preventDefault();
-        const isPaused = videos[0].el.paused;
-        videos.forEach(({ el }) => {
-          if (!el) return;
-          if (isPaused) el.play().catch(() => {});
-          else el.pause();
-        });
+        togglePlay();
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
-        const currentTime = videos[0].el.currentTime - videos[0].offset;
-        jumpTo(Math.max(0, currentTime - 1/30));
+        const base = videos[0].el.currentTime - videos[0].offset;
+        jumpTo(Math.max(0, base - 5));
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        const currentTime = videos[0].el.currentTime - videos[0].offset;
-        const duration = videos[0].el.duration;
-        jumpTo(Math.min(duration, currentTime + 1/30));
+        const base = videos[0].el.currentTime - videos[0].offset;
+        jumpTo(Math.min(duration, base + 5));
       }
     });
 
@@ -348,24 +550,21 @@ export const exportProjectZip = async (
     chapters.forEach((ch, i) => {
       const div = document.createElement("div");
       div.className = "tab";
-
-      // Check if text is likely to overflow (heuristic: > 60 chars)
       const isLong = ch.label.length > 60;
 
-      div.innerHTML = \`
-        <div class="tab-time">\${formatTime(ch.time)}</div>
-        <div class="tab-body">
-          <div class="tab-label">\${ch.label}</div>
-          \${isLong ? '<div class="expand-hint">▸ click to expand</div>' : ''}
-        </div>
-      \`;
+      // Use concatenation to avoid nesting template literals in the exporter
+      let html = '<div class="tab-time">' + formatTime(ch.time) + '</div>';
+      html += '<div class="tab-body">';
+      html += '<div class="tab-label">' + ch.label + '</div>';
+      if (isLong) html += '<div class="expand-hint">▸ click to expand</div>';
+      html += '</div>';
+      
+      div.innerHTML = html;
 
-      div.addEventListener("click", (e) => {
-        // If already active, toggle expanded
+      div.addEventListener("click", () => {
         if (div.classList.contains("active")) {
           div.classList.toggle("expanded");
         } else {
-          // Collapse any previously expanded tab
           tabEls.forEach(t => t.classList.remove("expanded"));
           jumpTo(ch.time);
           setActive(i);
@@ -376,26 +575,15 @@ export const exportProjectZip = async (
       tabEls.push(div);
     });
 
-    // ── Active tab tracking ───────────────────────────────────
-    if (videos.length > 0 && videos[0].el) {
-      videos[0].el.addEventListener("timeupdate", () => {
-        const base = videos[0].el.currentTime - videos[0].offset;
-        let active = 0;
-        for (let i = 0; i < chapters.length; i++) {
-          if (base >= chapters[i].time) active = i;
-        }
-        setActive(active);
-      });
-    }
-
     function setActive(index) {
       tabEls.forEach((el, i) => el.classList.toggle("active", i === index));
     }
 
     function formatTime(s) {
+      if (isNaN(s)) return "0:00";
       const m   = Math.floor(s / 60);
       const sec = String(Math.floor(s % 60)).padStart(2, "0");
-      return \`\${m}:\${sec}\`;
+      return m + ":" + sec;
     }
   </script>
 
@@ -411,6 +599,73 @@ export const exportProjectZip = async (
   const a = document.createElement('a');
   a.href = url;
   a.download = `${project.name.replace(/\s+/g, '_')}_export.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+/**
+ * Exports project metadata as a JSON file.
+ */
+export const exportProjectJson = (
+  project: Project,
+  videos: VideoAsset[],
+  notes: Note[]
+) => {
+  const exportData = {
+    version: '1.0',
+    project: {
+      name: project.name,
+      id: project.id
+    },
+    videos: videos.map(v => ({
+      name: v.name,
+      isReference: v.isReference,
+      offset: v.offset || 0,
+      id: v.id
+    })),
+    notes: notes.map(n => ({
+      text: n.text,
+      timestamp: n.timestamp
+    }))
+  };
+
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${project.name.replace(/\s+/g, '_')}_project.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+/**
+ * Exports notes as a pure text file with timestamps adjusted by a video's offset.
+ */
+export const exportProjectText = (
+  project: Project,
+  notes: Note[],
+  selectedVideo: VideoAsset
+) => {
+  const content = notes
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map(note => {
+      // Adjusted timestamp = note.timestamp + video.offset
+      const adjustedSeconds = Math.floor(note.timestamp + (selectedVideo.offset || 0));
+      const mm = Math.floor(adjustedSeconds / 60).toString().padStart(2, '0');
+      const ss = (adjustedSeconds % 60).toString().padStart(2, '0');
+      return `${mm}:${ss} ${note.text}`;
+    })
+    .join('\n');
+
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${project.name.replace(/\s+/g, '_')}_notes.txt`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
