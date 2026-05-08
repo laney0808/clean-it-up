@@ -1,0 +1,3 @@
+.github/workflows/* merge=ours
+package.json merge=union
+package-lock.json merge=ours
