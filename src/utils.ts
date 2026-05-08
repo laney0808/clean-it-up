@@ -31,3 +31,16 @@ export function formatTimestamp(seconds: number, fps: number = 30) {
   
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}:${frames.toString().padStart(2, '0')}`;
 }
+
+export function splitFileName(filename: string): { name: string; extension: string } {
+  const lastDotIndex = filename.lastIndexOf('.');
+  if (lastDotIndex <= 0) return { name: filename, extension: '' };
+  return {
+    name: filename.substring(0, lastDotIndex),
+    extension: filename.substring(lastDotIndex)
+  };
+}
+
+export function getFileNameWithoutExtension(filename: string): string {
+  return splitFileName(filename).name;
+}
