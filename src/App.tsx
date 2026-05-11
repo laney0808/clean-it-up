@@ -571,11 +571,39 @@ const ProjectViewer = ({
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [showTextExportSubmenu, setShowTextExportSubmenu] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [expandedNoteId, setExpandedNoteId] = useState<string | null>(null);
   const [viewingNoteId, setViewingNoteId] = useState<string | null>(null);
   const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
   const [tempVideoName, setTempVideoName] = useState('');
+  const [inlineEditingText, setInlineEditingText] = useState('');
   const [showControls, setShowControls] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const notesScrollRef = useRef<HTMLDivElement>(null);
+  const noteRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  const activeNoteId = useMemo(() => {
+    if (notes.length === 0) return null;
+    const sortedNotes = [...notes].sort((a, b) => a.timestamp - b.timestamp);
+    let activeId = null;
+    for (let i = 0; i < sortedNotes.length; i++) {
+      if (currentTime >= sortedNotes[i].timestamp) {
+        activeId = sortedNotes[i].id;
+      } else {
+        break;
+      }
+    }
+    return activeId;
+  }, [notes, currentTime]);
+
+  useEffect(() => {
+    if (activeNoteId && noteRefs.current.has(activeNoteId) && notesScrollRef.current) {
+      const el = noteRefs.current.get(activeNoteId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  }, [activeNoteId]);
 
   const [showLandscapeHint, setShowLandscapeHint] = useState(true);
 
@@ -788,6 +816,16 @@ const ProjectViewer = ({
     setNoteText('');
     setEditingNoteId(null);
     setIsAddingNote(false);
+  };
+
+  const handleInlineNoteUpdate = async (noteId: string, newText: string) => {
+    const note = notes.find(n => n.id === noteId);
+    if (note && newText.trim() && note.text !== newText) {
+      const updatedNote = { ...note, text: newText };
+      await db.saveNote(updatedNote);
+      setNotes(notes.map(n => n.id === noteId ? updatedNote : n));
+    }
+    setEditingNoteId(null);
   };
 
   const updateProjectName = async () => {
@@ -1199,57 +1237,123 @@ const ProjectViewer = ({
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                  <AnimatePresence mode="popLayout">
-                    {notes.map(note => (
-                      <motion.div
-                        key={note.id}
-                        layout
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        className="group bg-zinc-50 hover:bg-zinc-100 border border-zinc-100 rounded-xl p-3 transition-all cursor-pointer"
-                        onClick={() => {
-                          setCurrentTime(note.timestamp);
-                          setIsPlaying(false);
-                        }}
-                      >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <div className="flex items-center gap-1 text-zinc-500">
-                            <Clock size={12} />
-                            <span className="text-[10px] font-mono font-bold">{formatTimestamp(note.timestamp)}</span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setViewingNoteId(note.id);
-                              }}
-                              className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-zinc-900 transition-opacity"
-                            >
-                              <Info size={12} />
-                            </button>
-                            <button
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                onConfirmDelete({
-                                  title: 'Delete Note',
-                                  message: 'Are you sure you want to delete this note?',
-                                  onConfirm: async () => {
-                                    await db.deleteNote(note.id);
-                                    setNotes(notes.filter(n => n.id !== note.id));
-                                  }
-                                });
-                              }}
-                              className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-opacity"
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
+                <div 
+                  ref={notesScrollRef}
+                  className="flex-1 overflow-y-auto p-3 space-y-2 scroll-smooth"
+                >
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    {notes.map(note => {
+                      const isActive = activeNoteId === note.id;
+                      const isExpanded = expandedNoteId === note.id;
+                      const isEditing = editingNoteId === note.id;
+                      
+                      return (
+                        <div key={note.id} className="relative overflow-hidden rounded-xl bg-zinc-50">
+                          <motion.div
+                            ref={(el) => {
+                              if (el) noteRefs.current.set(note.id, el);
+                              else noteRefs.current.delete(note.id);
+                            }}
+                            layout
+                            initial={{ opacity: 0 }}
+                            animate={{ 
+                              opacity: 1, 
+                              x: 0,
+                              backgroundColor: isActive ? 'rgb(236 253 245)' : 'rgb(250 250 250)',
+                              borderColor: isActive ? 'rgb(16 185 129)' : 'rgb(244 244 245)'
+                            }}
+                            transition={{
+                              layout: { type: 'spring', bounce: 0, duration: 0.3 },
+                              opacity: { duration: 0.2 },
+                              x: { type: 'spring', bounce: 0.1, duration: 0.4 }
+                            }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            className={cn(
+                              "relative group border p-3 transition-all cursor-pointer z-10 select-none",
+                              isActive ? "shadow-sm" : "hover:bg-zinc-100"
+                            )}
+                            onClick={() => {
+                              if (isEditing) return;
+                              if (isExpanded) {
+                                setExpandedNoteId(null);
+                              } else {
+                                setCurrentTime(note.timestamp);
+                                setIsPlaying(false);
+                                setExpandedNoteId(note.id);
+                              }
+                            }}
+                          >
+                            <div className="flex items-center justify-between mb-1.5 pointer-events-none">
+                              <div className="flex items-center gap-1.5">
+                                <div className={cn(
+                                  "w-1.5 h-1.5 rounded-full transition-all",
+                                  isActive ? "bg-emerald-500 scale-125 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-transparent scale-100"
+                                )} />
+                                <div className="flex items-center gap-1 text-zinc-500">
+                                  <Clock size={12} />
+                                  <span className="text-[10px] font-mono font-bold">
+                                    {formatTimestamp(note.timestamp)}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 pointer-events-auto">
+                                {isExpanded && !isEditing && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingNoteId(note.id);
+                                      setInlineEditingText(note.text);
+                                    }}
+                                    className="p-1 text-zinc-400 hover:text-zinc-900 transition-colors"
+                                    title="Edit Note"
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    onConfirmDelete({
+                                      title: 'Delete Note',
+                                      message: 'Are you sure you want to delete this note?',
+                                      onConfirm: async () => {
+                                        await db.deleteNote(note.id);
+                                        setNotes(notes.filter(n => n.id !== note.id));
+                                      }
+                                    });
+                                  }}
+                                  className={cn(
+                                    "p-1 text-zinc-400 hover:text-red-500 transition-all",
+                                    isExpanded || isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                                  )}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </div>
+                            
+                            {isEditing ? (
+                              <textarea
+                                autoFocus
+                                value={inlineEditingText}
+                                onChange={(e) => setInlineEditingText(e.target.value)}
+                                onBlur={() => handleInlineNoteUpdate(note.id, inlineEditingText)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full bg-white border border-zinc-200 rounded-lg p-2 text-xs text-zinc-900 focus:ring-2 focus:ring-emerald-500/20 outline-none resize-none"
+                                rows={Math.max(2, inlineEditingText.split('\n').length)}
+                              />
+                            ) : (
+                              <p className={cn(
+                                "text-xs text-zinc-800 leading-relaxed transition-all pointer-events-none",
+                                isExpanded ? "whitespace-pre-wrap" : "line-clamp-2"
+                              )}>
+                                {note.text}
+                              </p>
+                            )}
+                          </motion.div>
                         </div>
-                        <p className="text-xs text-zinc-800 leading-relaxed line-clamp-2">{note.text}</p>
-                      </motion.div>
-                    ))}
+                      );
+                    })}
                   </AnimatePresence>
                   {notes.length === 0 && (
                     <div className="h-full flex flex-col items-center justify-center text-zinc-400 py-12">
@@ -1414,65 +1518,6 @@ const ProjectViewer = ({
           </AnimatePresence>
         </div>
       </main>
-
-      {/* View Note Modal */}
-      <AnimatePresence>
-        {viewingNoteId && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-zinc-900/40 backdrop-blur-sm"
-              onClick={() => setViewingNoteId(null)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden"
-            >
-              <div className="p-8">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl font-bold text-zinc-900">Note Detail</h3>
-                  <div className="flex items-center gap-2 text-zinc-500 bg-zinc-50 px-3 py-1.5 rounded-xl border border-zinc-100">
-                    <Clock size={16} />
-                    <span className="text-sm font-mono font-bold">
-                      {formatTimestamp(notes.find(n => n.id === viewingNoteId)?.timestamp || 0)}
-                    </span>
-                  </div>
-                </div>
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-6 text-zinc-900 whitespace-pre-wrap max-h-[60vh] overflow-y-auto leading-relaxed">
-                  {notes.find(n => n.id === viewingNoteId)?.text}
-                </div>
-                <div className="flex gap-3 mt-8">
-                  <button
-                    onClick={() => {
-                      const note = notes.find(n => n.id === viewingNoteId);
-                      if (note) {
-                        setNoteText(note.text);
-                        setEditingNoteId(note.id);
-                        setViewingNoteId(null);
-                        setIsAddingNote(true);
-                      }
-                    }}
-                    className="flex-1 px-6 py-3 rounded-xl font-semibold text-zinc-900 bg-zinc-100 hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2"
-                  >
-                    <Pencil size={18} />
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => setViewingNoteId(null)}
-                    className="flex-1 px-6 py-3 rounded-xl font-semibold text-white bg-zinc-900 hover:bg-zinc-800 transition-colors"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* Add Note Modal */}
       <AnimatePresence>
