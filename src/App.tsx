@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff, Info, FileJson, Archive, Download, Upload, FileText, ChevronRight } from 'lucide-react';
+import { Plus, Video, Trash2, ChevronLeft, Play, Pause, SkipBack, SkipForward, StickyNote, Clock, Settings2, X, AlertTriangle, RefreshCw, FileVideo, ShieldCheck, Share, Volume2, VolumeX, Pencil, Eye, EyeOff, Info, FileJson, Archive, Download, Upload, FileText, ChevronRight, Maximize, Minimize, Settings } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, Project, VideoAsset, Note } from './db';
 import { cn, formatTimestamp, getFileNameWithoutExtension, splitFileName } from './utils';
@@ -477,6 +477,8 @@ const MissingVideosModal = ({ task, onClose }: { task: MissingVideosTask; onClos
     }
   };
 
+  const isReferenceMissing = task.missingVideos.some(v => v.isReference && !files[v.id]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/40 backdrop-blur-sm">
       <motion.div
@@ -500,7 +502,7 @@ const MissingVideosModal = ({ task, onClose }: { task: MissingVideosTask; onClos
               <div key={v.id} className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100 italic flex flex-col gap-2">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-semibold text-zinc-700">
-                    {v.isReference ? 'Reference' : 'Comparison'}: {getFileNameWithoutExtension(v.name)}
+                    {v.isReference ? 'Reference (Required)' : 'Comparison (Optional)'}: {getFileNameWithoutExtension(v.name)}
                   </span>
                   {files[v.id] && <ShieldCheck size={16} className="text-emerald-500" />}
                 </div>
@@ -523,7 +525,7 @@ const MissingVideosModal = ({ task, onClose }: { task: MissingVideosTask; onClos
             </button>
             <button
               onClick={handleImport}
-              disabled={isProcessing || Object.keys(files).length === 0}
+              disabled={isProcessing || isReferenceMissing}
               className="flex-1 px-6 py-3 bg-zinc-900 text-white font-semibold rounded-2xl hover:bg-zinc-800 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isProcessing ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
@@ -572,6 +574,7 @@ const ProjectViewer = ({
   const [showTextExportSubmenu, setShowTextExportSubmenu] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [expandedNoteId, setExpandedNoteId] = useState<string | null>(null);
+  const [isFullScreen, setIsFullScreen] = useState(false);
   const [viewingNoteId, setViewingNoteId] = useState<string | null>(null);
   const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
   const [tempVideoName, setTempVideoName] = useState('');
@@ -587,7 +590,8 @@ const ProjectViewer = ({
     const sortedNotes = [...notes].sort((a, b) => a.timestamp - b.timestamp);
     let activeId = null;
     for (let i = 0; i < sortedNotes.length; i++) {
-      if (currentTime >= sortedNotes[i].timestamp) {
+      // Add a tiny epsilon (0.05s) to handle video seeking precision issues
+      if (currentTime >= sortedNotes[i].timestamp - 0.05) {
         activeId = sortedNotes[i].id;
       } else {
         break;
@@ -921,7 +925,7 @@ const ProjectViewer = ({
   return (
     <div className="h-screen bg-white flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="h-16 border-b border-zinc-100 px-6 flex items-center justify-between bg-white sticky top-0 z-10">
+      <header className="h-16 border-b border-zinc-100 px-6 flex items-center justify-between bg-white sticky top-0 z-40">
         <div className="flex items-center gap-4">
           <button
             onClick={onBack}
@@ -1137,97 +1141,91 @@ const ProjectViewer = ({
                     else videoRefs.current.delete(id);
                   }}
                 />
-
-                {/* YouTube-style Controls Overlay */}
-                <AnimatePresence>
-                  {showControls && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-12 pb-4 px-4"
-                    >
-                      {/* Progress Bar */}
-                      <div className="relative h-1.5 mb-3 group/progress cursor-pointer">
-                        <input
-                          type="range"
-                          min="0"
-                          max={duration || 100}
-                          step="0.01"
-                          value={currentTime}
-                          onChange={(e) => setCurrentTime(parseFloat(e.target.value))}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                        />
-                        <div className="absolute inset-y-0 left-0 right-0 bg-white/20 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-emerald-500 transition-all duration-100 relative"
-                            style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
-                          >
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-emerald-500 rounded-full shadow-lg scale-0 group-hover/progress:scale-100 transition-transform" />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setIsPlaying(!isPlaying);
-                            }}
-                            className="text-white hover:text-emerald-400 transition-colors"
-                          >
-                            {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
-                          </button>
-                          
-                          <div className="flex items-center gap-2 text-white/90 font-mono text-sm tabular-nums">
-                            <span>{formatTimestamp(currentTime)}</span>
-                            <span className="text-white/40">/</span>
-                            <span className="text-white/60">{formatTimestamp(duration)}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setIsRefHidden(!isRefHidden);
-                            }}
-                            className={cn(
-                              "p-2 rounded-lg transition-colors",
-                              isRefHidden ? "text-emerald-400" : "text-white hover:text-emerald-400"
-                            )}
-                            title={isRefHidden ? "Show Reference" : "Hide Reference"}
-                          >
-                            {isRefHidden ? <EyeOff size={20} /> : <Eye size={20} />}
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSidebarTab('videos');
-                            }}
-                            className={cn(
-                              "p-2 rounded-lg transition-colors",
-                              sidebarTab === 'videos' ? "text-emerald-400" : "text-white hover:text-emerald-400"
-                            )}
-                          >
-                            <Settings2 size={20} />
-                          </button>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
             )}
 
+            {/* Locked Playback Controls Bar - Pinned to absolute bottom of viewer container */}
+            {referenceVideo && (
+              <div className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-12 pb-4 px-4 translate-y-0 opacity-100">
+                {/* Progress Bar */}
+                <div className="relative h-1.5 mb-3 group/progress cursor-pointer">
+                  <input
+                    type="range"
+                    min="0"
+                    max={duration || 100}
+                    step="0.01"
+                    value={currentTime}
+                    onChange={(e) => setCurrentTime(parseFloat(e.target.value))}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  />
+                  <div className="absolute inset-y-0 left-0 right-0 bg-white/20 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-emerald-500 transition-all duration-100 relative"
+                      style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
+                    >
+                      <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-emerald-500 rounded-full shadow-lg scale-0 group-hover/progress:scale-100 transition-transform" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsPlaying(!isPlaying);
+                      }}
+                      className="text-white hover:text-emerald-400 transition-colors"
+                    >
+                      {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
+                    </button>
+                    
+                    <div className="flex items-center gap-2 text-white/90 font-mono text-sm tabular-nums">
+                      <span>{formatTimestamp(currentTime)}</span>
+                      <span className="text-white/40">/</span>
+                      <span className="text-white/60">{formatTimestamp(duration)}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsRefHidden(!isRefHidden);
+                      }}
+                      className={cn(
+                        "p-2 rounded-lg transition-colors",
+                        isRefHidden ? "text-emerald-400" : "text-white hover:text-emerald-400"
+                      )}
+                      title={isRefHidden ? "Show Reference" : "Hide Reference"}
+                    >
+                      {isRefHidden ? <EyeOff size={20} /> : <Eye size={20} />}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsFullScreen(!isFullScreen);
+                      }}
+                      className={cn(
+                        "p-2 rounded-lg transition-colors",
+                        isFullScreen ? "text-emerald-400" : "text-white hover:text-emerald-400"
+                      )}
+                      title={isFullScreen ? "Exit Full Screen" : "Full Screen"}
+                    >
+                      {isFullScreen ? <Minimize size={20} /> : <Maximize size={20} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Sidebar */}
-        <div className="w-full landscape:w-72 md:w-80 border-t landscape:border-t-0 md:border-t-0 landscape:border-l md:border-l border-zinc-100 bg-white flex flex-col flex-1 landscape:flex-none md:flex-none min-h-0">
-          {/* Sidebar Tabs */}
-          <div className="flex border-b border-zinc-100">
+        {!isFullScreen && (
+          <div className="w-full landscape:w-72 md:w-80 border-t landscape:border-t-0 md:border-t-0 landscape:border-l md:border-l border-zinc-100 bg-white flex flex-col flex-1 landscape:flex-none md:flex-none min-h-0">
+            {/* Sidebar Tabs */}
+            <div className="flex border-b border-zinc-100">
             <button
               onClick={() => setSidebarTab('notes')}
               className={cn(
@@ -1263,6 +1261,13 @@ const ProjectViewer = ({
                     <h2 className="font-bold text-zinc-900 text-xs">Project Notes</h2>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsSettingsOpen(true)}
+                      className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
+                      title="Settings"
+                    >
+                      <Settings size={14} />
+                    </button>
                     <button
                       onClick={() => {
                         setIsPlaying(false);
@@ -1301,8 +1306,6 @@ const ProjectViewer = ({
                             animate={{ 
                               opacity: 1, 
                               x: 0,
-                              backgroundColor: isActive ? 'rgb(236 253 245)' : 'rgb(250 250 250)',
-                              borderColor: isActive ? 'rgb(16 185 129)' : 'rgb(244 244 245)'
                             }}
                             transition={{
                               layout: { type: 'spring', bounce: 0, duration: 0.3 },
@@ -1311,8 +1314,7 @@ const ProjectViewer = ({
                             }}
                             exit={{ opacity: 0, scale: 0.95 }}
                             className={cn(
-                              "relative group border p-3 transition-all cursor-pointer z-10 select-none",
-                              isActive ? "shadow-sm" : "hover:bg-zinc-100"
+                              "relative group border border-zinc-100 bg-zinc-50 p-3 transition-all cursor-pointer z-10 select-none hover:bg-zinc-100"
                             )}
                             onClick={() => {
                               if (isEditing) return;
@@ -1559,6 +1561,7 @@ const ProjectViewer = ({
             )}
           </AnimatePresence>
         </div>
+      )}
       </main>
 
       {/* Add Note Modal */}

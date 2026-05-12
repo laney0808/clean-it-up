@@ -149,6 +149,10 @@ export const exportProjectZip = async (
       .side-panel { width: 100%; max-height: 400px; position: static; }
     }
 
+    .app-container.fullscreen .side-panel { display: none; }
+    .app-container.fullscreen .main-content { max-width: none; }
+    .video-wrap.fullscreen { max-width: none; }
+
     /* ── Video grid ── */
     .video-row {
       width: 100%;
@@ -222,9 +226,9 @@ export const exportProjectZip = async (
       width: 100%;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
       background: #141414;
-      padding: 16px;
+      padding: 12px;
       border: 1px solid #2a2a2a;
       border-radius: 12px;
     }
@@ -232,8 +236,15 @@ export const exportProjectZip = async (
     .control-row {
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 12px;
       width: 100%;
+    }
+
+    .control-left, .control-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
 
     .scrubber-wrap {
@@ -392,7 +403,12 @@ export const exportProjectZip = async (
           </div>
         </div>
         <div class="control-row">
-          <button id="play-pause-btn" title="Play/Pause">▶</button>
+          <div class="control-left">
+            <button id="play-pause-btn" title="Play/Pause">▶</button>
+          </div>
+          <div class="control-right">
+            <button id="fullscreen-btn" title="Toggle Full Screen">⛶</button>
+          </div>
         </div>
       </div>
     </div>
@@ -411,6 +427,8 @@ export const exportProjectZip = async (
     ];
 
     const playPauseBtn = document.getElementById("play-pause-btn");
+    const fullscreenBtn = document.getElementById("fullscreen-btn");
+    const container = document.querySelector(".app-container");
     const scrubber = document.getElementById("scrubber");
     const currentTimeEl = document.getElementById("current-time");
     const totalTimeEl = document.getElementById("total-time");
@@ -497,6 +515,13 @@ export const exportProjectZip = async (
       const val = parseFloat(e.target.value);
       jumpTo(val);
     });
+
+    if (fullscreenBtn) {
+      fullscreenBtn.addEventListener("click", () => {
+        container.classList.toggle("fullscreen");
+        fullscreenBtn.textContent = container.classList.contains("fullscreen") ? "❐" : "⛶";
+      });
+    }
 
     // ── Jump to timestamp (pause + seek) ──────────────────────
     function jumpTo(timestamp) {
