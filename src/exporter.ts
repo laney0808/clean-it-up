@@ -528,19 +528,37 @@ export const exportProjectZip = async (
 
     // ── Keyboard Controls ─────────────────────────────────────
     window.addEventListener("keydown", (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      const target = e.target;
+      const isTextualInput = 
+        (target.tagName === 'INPUT' && !['range', 'checkbox', 'radio'].includes(target.type)) ||
+        target.tagName === 'TEXTAREA' || 
+        target.isContentEditable;
 
-      if (e.code === "Space") {
+      if (isTextualInput) return;
+
+      const base = videos[0].el.currentTime - videos[0].offset;
+
+      if (e.code === "Space" || e.key === " ") {
         e.preventDefault();
         togglePlay();
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
-        const base = videos[0].el.currentTime - videos[0].offset;
-        jumpTo(Math.max(0, base - 5));
+        if (e.shiftKey) {
+          const sorted = [...notesData].sort((a, b) => a.timestamp - b.timestamp);
+          const prevNote = [...sorted].reverse().find(n => n.timestamp < base - 0.1);
+          if (prevNote) jumpTo(prevNote.timestamp);
+        } else {
+          jumpTo(Math.max(0, base - 5));
+        }
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        const base = videos[0].el.currentTime - videos[0].offset;
-        jumpTo(Math.min(duration, base + 5));
+        if (e.shiftKey) {
+          const sorted = [...notesData].sort((a, b) => a.timestamp - b.timestamp);
+          const nextNote = sorted.find(n => n.timestamp > base + 0.1);
+          if (nextNote) jumpTo(nextNote.timestamp);
+        } else {
+          jumpTo(Math.min(duration, base + 5));
+        }
       }
     });
 

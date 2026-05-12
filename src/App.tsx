@@ -622,35 +622,6 @@ const ProjectViewer = ({
     }
   }, [isPlaying, referenceVideo?.id]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger if user is typing in an input or textarea
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' || 
-        target.tagName === 'TEXTAREA' || 
-        target.isContentEditable
-      ) {
-        return;
-      }
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        setIsPlaying(prev => !prev);
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        setCurrentTime(prev => Math.max(0, prev - 1/30));
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        // Use duration if available, otherwise just seek forward
-        setCurrentTime(prev => duration > 0 ? Math.min(duration, prev + 1/30) : prev + 1/30);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [duration]);
-
   const [showStatusIndicator, setShowStatusIndicator] = useState(false);
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
 
@@ -856,6 +827,77 @@ const ProjectViewer = ({
     setVideos(videos.map(v => v.id === videoId ? updated : v));
     setEditingVideoId(null);
   };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input or textarea
+      const target = e.target as HTMLElement;
+      const isTextualInput = 
+        (target.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit'].includes((target as HTMLInputElement).type)) ||
+        target.tagName === 'TEXTAREA' || 
+        target.isContentEditable;
+
+      // Handle Enter and Shift+Enter inside textarea/editing specifically
+      if (isTextualInput) {
+        if (e.key === 'Enter') {
+          if (e.shiftKey) {
+            // Standard behavior: Allow new line
+            return;
+          } else {
+            // Intercept single Enter to save
+            e.preventDefault();
+            if (isAddingNote) {
+              handleAddNote();
+            } else if (editingNoteId) {
+              handleInlineNoteUpdate(editingNoteId, inlineEditingText);
+            }
+          }
+        }
+        return;
+      }
+
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        setIsPlaying(prev => !prev);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          // Navigate to previous note
+          const sorted = [...notes].sort((a, b) => a.timestamp - b.timestamp);
+          // Find the last note that is before current time
+          const prevNote = [...sorted].reverse().find(n => n.timestamp < currentTime - 0.1);
+          if (prevNote) {
+            setCurrentTime(prevNote.timestamp);
+            setExpandedNoteId(prevNote.id);
+          }
+        } else {
+          setCurrentTime(prev => Math.max(0, prev - 1/30));
+        }
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          // Navigate to next note
+          const sorted = [...notes].sort((a, b) => a.timestamp - b.timestamp);
+          const nextNote = sorted.find(n => n.timestamp > currentTime + 0.1);
+          if (nextNote) {
+            setCurrentTime(nextNote.timestamp);
+            setExpandedNoteId(nextNote.id);
+          }
+        } else {
+          setCurrentTime(prev => duration > 0 ? Math.min(duration, prev + 1/30) : prev + 1/30);
+        }
+      } else if (e.key.toLowerCase() === 'i') {
+        e.preventDefault();
+        setNoteText('');
+        setEditingNoteId(null);
+        setIsAddingNote(true);
+        setIsPlaying(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [duration, notes, currentTime, isAddingNote, editingNoteId, inlineEditingText, handleAddNote, handleInlineNoteUpdate]);
 
   const updateVideoOffset = async (videoId: string, offset: number) => {
     const video = videos.find(v => v.id === videoId);
